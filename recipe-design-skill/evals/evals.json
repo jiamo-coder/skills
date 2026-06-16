@@ -1,0 +1,23 @@
+{
+  "skill_name": "recipe-design-skill",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我设计一个开心果冰淇淋配方，只输出可落库 JSON。",
+      "expected_output": "输出顶层仅包含 finishedProduct 的 JSON；自动推断为冰淇淋/Gelato；finishedProduct.duration 为整数；BOM 全部使用 unitId=1、unitName=g、quantity 数字；不包含 ingredientId；SOP 步骤 duration/temperature 为语义字符串或空字符串。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "我有开心果酱和淡奶油，想做一个适合门店售卖的甜品，帮我自动选方向并生成配方 JSON。",
+      "expected_output": "自动选择商业化甜品方向；丰富假设和选择理由写入 finishedProduct.description；bomItems 分组按 groupSort 聚合，不逐行递增；所有单位换算为 g；最终不新增 recipe_meta、flavor_design、bom、sop 等扩展字段。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "做一款草莓酸奶杯，目标成本 5.5 元/份，规格 180g/杯，适合门店现制售卖。请输出系统可入库 JSON。",
+      "expected_output": "成本估算、是否超标、降本建议写入 finishedProduct.description；finishedProduct 字段保持 name/difficulty/duration/description/bomItems/sopItems；BOM 使用克重；SOP 包含门店现制关键步骤和食品安全提示。",
+      "files": []
+    }
+  ]
+}

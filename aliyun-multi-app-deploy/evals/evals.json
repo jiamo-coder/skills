@@ -1,0 +1,23 @@
+{
+  "skill_name": "aliyun-multi-app-deploy",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "给 product-opportunity 生成阿里云部署配置，域名 productop.qiaokiai.com，端口 8001。",
+      "expected_output": "输出配置摘要、可直接复制的 nginx.conf、api.env.example、systemd service 和 .deploy.local.sh 变量块，并且路径全部落在 /service/product-opportunity。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "我要部署 crm-admin，端口 8018，你把缺的值问完后直接给我可粘贴配置。",
+      "expected_output": "只追问缺失的域名，确认后输出完整服务器侧配置，端口正确替换为 8018。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "按这个 skill 给 ops-panel 出 env、systemd、deploy 变量和 nginx。",
+      "expected_output": "识别用户没给 domain 和 port，需要先补齐，再输出完整配置，不发明 package_release.sh 或 deploy_release.sh。",
+      "files": []
+    }
+  ]
+}
