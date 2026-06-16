@@ -1,4 +1,4 @@
 interface:
   display_name: "配方智能设计"
-  short_description: "把少量配方需求生成可落库的 finishedProduct JSON"
+  short_description: "生成可落库配方 JSON，并按需输出审核设计依据"
   default_prompt: "帮我设计一份可落库的商业配方，严格输出 finishedProduct JSON。"
