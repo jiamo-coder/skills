@@ -9,6 +9,10 @@
 - 是否是 monorepo
 - app / package 目录结构
 - 是否已有 `deploy/aliyun`
+- 是否已有 `.git`
+- 是否已有 git remote
+- 当前 `package.json.version`
+- 是否已有 `deploy/aliyun/release-version.json`
 
 ## Build Facts
 
@@ -23,6 +27,7 @@
 - 是否需要 `npm install --omit=dev`
 - 健康检查路径
 - 是否需要上传额外运行时资源
+- 发布后是否需要自动同步 GitHub
 
 ## Packaging Facts
 
@@ -30,6 +35,8 @@
 - 发布包必须包含的校验路径
 - stage 目录布局
 - 远端 release 目录布局
+- 版本计划 sidecar 文件格式
+- Git tag 命名规则
 
 ## Output Files
 
@@ -39,6 +46,8 @@
 - `deploy/aliyun/scripts/deploy_release.sh`
 - `deploy/aliyun/scripts/start-prod.sh`
 - `deploy/aliyun/scripts/server-bootstrap.sh`
+- `deploy/aliyun/scripts/manage_release_version.mjs`
+- `deploy/aliyun/scripts/sync_git_release.sh`
 
 可选依赖但不一定由这个 skill 生成：
 

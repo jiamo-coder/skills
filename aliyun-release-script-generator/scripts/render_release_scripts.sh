@@ -85,6 +85,8 @@ PACKAGE_SCRIPT="$OUTPUT_DIR/package_release.sh"
 DEPLOY_SCRIPT="$OUTPUT_DIR/deploy_release.sh"
 START_SCRIPT="$OUTPUT_DIR/start-prod.sh"
 BOOTSTRAP_SCRIPT="$OUTPUT_DIR/server-bootstrap.sh"
+VERSION_SCRIPT="$OUTPUT_DIR/manage_release_version.mjs"
+GIT_SYNC_SCRIPT="$OUTPUT_DIR/sync_git_release.sh"
 
 API_DIST_PARENT="$(dirname "$API_DIST_PATH")"
 ENV_TEMPLATE_Q="$(shell_quote "$ENV_TEMPLATE")"
@@ -104,7 +106,7 @@ if [[ -n "$ADMIN_BUILD_CMD" ]]; then
 fi
 
 PACKAGE_STAGE_COPY_BLOCK=""
-REQUIRED_PATHS_BLOCK=""
+REQUIRED_PATHS_BLOCK=$'\n'"  required_paths+=(\"deploy/aliyun/manage_release_version.mjs\")"$'\n'"  required_paths+=(\"deploy/aliyun/sync_git_release.sh\")"
 REMOTE_MKDIR_ARGS='"$REMOTE_RELEASES_DIR" "$REMOTE_SHARED_DIR" "$REMOTE_DATA_DIR" "$REMOTE_UPLOADS_DIR" "$REMOTE_LOG_DIR" "$REMOTE_ENV_DIR"'
 REMOTE_SYNC_BLOCK=""
 BOOTSTRAP_DIRS=(
@@ -173,11 +175,20 @@ RELEASE_DIR="\$DEPLOY_DIR/release"
 STAGE_DIR="\$(mktemp -d)"
 STAMP="\${1:-\$(date +%Y%m%d-%H%M%S)}"
 ARTIFACT="\$RELEASE_DIR/$RELEASE_PREFIX-\$STAMP.tgz"
+VERSION_PLAN_FILE="\${ARTIFACT%.tgz}.version-plan.json"
+RELEASE_TYPE_ZH="\${PO_RELEASE_TYPE_ZH:-}"
 
 cleanup() {
   rm -rf "\$STAGE_DIR"
 }
 trap cleanup EXIT
+
+require_cmd() {
+  if ! command -v "\$1" >/dev/null 2>&1; then
+    echo "缺少命令: \$1" >&2
+    exit 1
+  fi
+}
 
 require_file() {
   local file="\$1"
@@ -188,15 +199,25 @@ require_file() {
 }
 
 require_file "\$ENV_FILE"
+require_cmd node
 
 set -a
 source "\$ENV_FILE"
 set +a
 
+if [[ -z "\$RELEASE_TYPE_ZH" ]]; then
+  echo "缺少环境变量: PO_RELEASE_TYPE_ZH（可选值：大改版 / 新功能 / 修复优化）" >&2
+  exit 1
+fi
+
 mkdir -p "\$RELEASE_DIR"
 mkdir -p "\$STAGE_DIR/deploy/aliyun" "\$STAGE_DIR/$API_DIST_PARENT_Q"
 
 cd "\$ROOT_DIR"
+
+node "\$DEPLOY_DIR/scripts/manage_release_version.mjs" plan \\
+  --release-type-zh "\$RELEASE_TYPE_ZH" \\
+  --output "\$VERSION_PLAN_FILE"
 
 $PACKAGE_BUILD_BLOCK
 
@@ -210,10 +231,13 @@ cp $SERVICE_TEMPLATE_Q "\$STAGE_DIR/deploy/aliyun/"
 cp $NGINX_TEMPLATE_Q "\$STAGE_DIR/deploy/aliyun/"
 cp "\$DEPLOY_DIR/scripts/server-bootstrap.sh" "\$STAGE_DIR/deploy/aliyun/server-bootstrap.sh"
 cp "\$DEPLOY_DIR/scripts/start-prod.sh" "\$STAGE_DIR/deploy/aliyun/start-prod.sh"
+cp "\$DEPLOY_DIR/scripts/manage_release_version.mjs" "\$STAGE_DIR/deploy/aliyun/manage_release_version.mjs"
+cp "\$DEPLOY_DIR/scripts/sync_git_release.sh" "\$STAGE_DIR/deploy/aliyun/sync_git_release.sh"
 
 tar -czf "\$ARTIFACT" -C "\$STAGE_DIR" .
 
 echo "发布包已生成: \$ARTIFACT"
+echo "版本计划文件已生成: \$VERSION_PLAN_FILE"
 EOF
 
 cat > "$DEPLOY_SCRIPT" <<EOF
@@ -307,9 +331,16 @@ if [[ -n "\$STAMP" ]]; then
 else
   ARTIFACT="\$(latest_artifact)"
 fi
+VERSION_PLAN_FILE="\${ARTIFACT%.tgz}.version-plan.json"
 
 if [[ ! -f "\${ARTIFACT:-}" ]]; then
   echo "未找到发布包，请先执行 package_release.sh" >&2
+  exit 1
+fi
+
+if [[ ! -f "\$VERSION_PLAN_FILE" ]]; then
+  echo "未找到版本计划文件: \$VERSION_PLAN_FILE" >&2
+  echo "请重新执行 package_release.sh 生成与发布包匹配的版本计划文件" >&2
   exit 1
 fi
 
@@ -317,6 +348,7 @@ require_cmd ssh
 require_cmd scp
 require_cmd sed
 require_cmd tar
+require_cmd node
 require_env DEPLOY_HOST
 require_env DEPLOY_USER
 validate_artifact "\$ARTIFACT"
@@ -465,7 +497,362 @@ REMOTE_EOF
 
 run_ssh "\$REMOTE_CMD"
 
+VERSION_ENV_OUTPUT="\$(node "\$DEPLOY_DIR/scripts/manage_release_version.mjs" apply --plan-file "\$VERSION_PLAN_FILE" --format env)"
+eval "\$VERSION_ENV_OUTPUT"
+
+bash "\$DEPLOY_DIR/scripts/sync_git_release.sh" \\
+  --git-tag "\$RELEASE_GIT_TAG" \\
+  --display-version "\$RELEASE_DISPLAY_VERSION" \\
+  --release-type-zh "\$RELEASE_TYPE_ZH"
+
+echo "[$PROJECT_SLUG] 版本已同步: \$RELEASE_DISPLAY_VERSION"
 echo "[$PROJECT_SLUG] 发布完成"
+EOF
+
+cat > "$VERSION_SCRIPT" <<'EOF'
+#!/usr/bin/env node
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(scriptDir, '../../..');
+const packageJsonPath = path.join(repoRoot, 'package.json');
+const versionFilePath = path.join(repoRoot, 'deploy', 'aliyun', 'release-version.json');
+
+const releaseTypeMap = {
+  '大改版': 'major',
+  '新功能': 'minor',
+  '修复优化': 'patch',
+};
+
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}
+
+function usage() {
+  console.log(`Usage:
+  node deploy/aliyun/scripts/manage_release_version.mjs plan --release-type-zh <大改版|新功能|修复优化> --output <file>
+  node deploy/aliyun/scripts/manage_release_version.mjs apply --plan-file <file> [--format env|json|text]`);
+}
+
+function parseArgs(argv) {
+  const result = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const key = argv[i];
+    if (!key.startsWith('--')) {
+      fail(`未知参数: ${key}`);
+    }
+    const value = argv[i + 1];
+    if (value == null || value.startsWith('--')) {
+      fail(`参数缺少值: ${key}`);
+    }
+    result[key.slice(2)] = value;
+    i += 1;
+  }
+  return result;
+}
+
+function readJson(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function writeJson(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function parseSemver(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const match = value.trim().match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+  };
+}
+
+function formatSemver(semver) {
+  return `${semver.major}.${semver.minor}.${semver.patch}`;
+}
+
+function bumpSemver(semver, releaseTypeKey) {
+  if (releaseTypeKey === 'major') {
+    return { major: semver.major + 1, minor: 0, patch: 0 };
+  }
+  if (releaseTypeKey === 'minor') {
+    return { major: semver.major, minor: semver.minor + 1, patch: 0 };
+  }
+  return { major: semver.major, minor: semver.minor, patch: semver.patch + 1 };
+}
+
+function getCurrentState() {
+  if (!fs.existsSync(packageJsonPath)) {
+    fail(`未找到 package.json: ${packageJsonPath}`);
+  }
+
+  const packageJson = readJson(packageJsonPath);
+  const versionMeta = fs.existsSync(versionFilePath) ? readJson(versionFilePath) : {};
+  const metaSemver = parseSemver(versionMeta.semver);
+  const packageSemver = parseSemver(packageJson.version);
+  const semver = metaSemver ?? packageSemver;
+  const buildCount = Number.isInteger(versionMeta.buildCount) && versionMeta.buildCount >= 0
+    ? versionMeta.buildCount
+    : 0;
+
+  return {
+    packageJson,
+    semver,
+    semverString: semver ? formatSemver(semver) : null,
+    buildCount,
+  };
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function makePlan(releaseTypeZh) {
+  const releaseTypeKey = releaseTypeMap[releaseTypeZh];
+  if (!releaseTypeKey) {
+    fail(`不支持的发布类型: ${releaseTypeZh}（可选值：大改版 / 新功能 / 修复优化）`);
+  }
+
+  const state = getCurrentState();
+  const nextSemver = state.semver ? bumpSemver(state.semver, releaseTypeKey) : { major: 1, minor: 0, patch: 0 };
+  const nextSemverString = formatSemver(nextSemver);
+  const nextBuildCount = state.buildCount + 1;
+
+  return {
+    schemaVersion: 1,
+    projectName: state.packageJson.name ?? path.basename(repoRoot),
+    releaseTypeZh,
+    releaseTypeKey,
+    baseSemver: state.semverString,
+    previousBuildCount: state.buildCount,
+    nextSemver: nextSemverString,
+    nextBuildCount,
+    displayVersion: `${nextSemverString} (${nextBuildCount})`,
+    gitTag: `v${nextSemverString}-build.${nextBuildCount}`,
+    plannedAt: new Date().toISOString(),
+  };
+}
+
+function printApplyResult(plan, format) {
+  if (format === 'json') {
+    process.stdout.write(`${JSON.stringify(plan)}\n`);
+    return;
+  }
+
+  if (format === 'env') {
+    process.stdout.write([
+      `RELEASE_SEMVER=${shellQuote(plan.nextSemver)}`,
+      `RELEASE_BUILD_COUNT=${shellQuote(String(plan.nextBuildCount))}`,
+      `RELEASE_DISPLAY_VERSION=${shellQuote(plan.displayVersion)}`,
+      `RELEASE_GIT_TAG=${shellQuote(plan.gitTag)}`,
+      `RELEASE_TYPE_ZH=${shellQuote(plan.releaseTypeZh)}`,
+    ].join('\n'));
+    process.stdout.write('\n');
+    return;
+  }
+
+  console.log(`版本已更新为 ${plan.displayVersion}`);
+}
+
+const [command, ...restArgs] = process.argv.slice(2);
+if (!command || command === '-h' || command === '--help') {
+  usage();
+  process.exit(command ? 0 : 1);
+}
+
+const args = parseArgs(restArgs);
+
+if (command === 'plan') {
+  if (!args['release-type-zh']) {
+    fail('plan 缺少参数: --release-type-zh');
+  }
+  if (!args.output) {
+    fail('plan 缺少参数: --output');
+  }
+
+  const plan = makePlan(args['release-type-zh']);
+  writeJson(path.resolve(args.output), plan);
+  console.log(`计划发布版本: ${plan.displayVersion}`);
+  process.exit(0);
+}
+
+if (command === 'apply') {
+  if (!args['plan-file']) {
+    fail('apply 缺少参数: --plan-file');
+  }
+
+  const format = args.format ?? 'text';
+  if (!['text', 'env', 'json'].includes(format)) {
+    fail(`不支持的输出格式: ${format}`);
+  }
+
+  const planFilePath = path.resolve(args['plan-file']);
+  if (!fs.existsSync(planFilePath)) {
+    fail(`未找到版本计划文件: ${planFilePath}`);
+  }
+
+  const plan = readJson(planFilePath);
+  const currentState = getCurrentState();
+  if (currentState.semverString !== (plan.baseSemver ?? null) || currentState.buildCount !== plan.previousBuildCount) {
+    fail('当前版本状态已变化，请重新执行 package_release.sh 生成新的版本计划文件。');
+  }
+
+  const packageJson = currentState.packageJson;
+  packageJson.version = plan.nextSemver;
+  writeJson(packageJsonPath, packageJson);
+
+  writeJson(versionFilePath, {
+    schemaVersion: 1,
+    semver: plan.nextSemver,
+    buildCount: plan.nextBuildCount,
+    displayVersion: plan.displayVersion,
+    lastReleaseTypeZh: plan.releaseTypeZh,
+    lastReleasedAt: new Date().toISOString(),
+    lastGitTag: plan.gitTag,
+  });
+
+  printApplyResult(plan, format);
+  process.exit(0);
+}
+
+fail(`未知命令: ${command}`);
+EOF
+
+cat > "$GIT_SYNC_SCRIPT" <<'EOF'
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  sync_git_release.sh --git-tag <tag> --display-version <version> --release-type-zh <type>
+USAGE
+}
+
+fail() {
+  echo "$1" >&2
+  exit 1
+}
+
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    fail "缺少命令: $1"
+  fi
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+REMOTE_NAME="${PO_GITHUB_REMOTE_NAME:-origin}"
+REPO_NAME="${PO_GITHUB_REPO_NAME:-$(basename "$ROOT_DIR")}"
+VISIBILITY="${PO_GITHUB_VISIBILITY:-private}"
+DEFAULT_BRANCH="${PO_GITHUB_DEFAULT_BRANCH:-main}"
+GIT_TAG=""
+DISPLAY_VERSION=""
+RELEASE_TYPE_ZH=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --git-tag) GIT_TAG="$2"; shift 2 ;;
+    --display-version) DISPLAY_VERSION="$2"; shift 2 ;;
+    --release-type-zh) RELEASE_TYPE_ZH="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *)
+      fail "未知参数: $1"
+      ;;
+  esac
+done
+
+if [[ -z "$GIT_TAG" || -z "$DISPLAY_VERSION" || -z "$RELEASE_TYPE_ZH" ]]; then
+  usage >&2
+  exit 1
+fi
+
+require_cmd git
+
+ensure_git_repo() {
+  if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return
+  fi
+
+  if [[ ! -f "$ROOT_DIR/.gitignore" ]]; then
+    fail "当前项目还不是 git 仓，且缺少 .gitignore。请先补 .gitignore 再重试。"
+  fi
+
+  git -C "$ROOT_DIR" init >/dev/null
+  git -C "$ROOT_DIR" checkout -B "$DEFAULT_BRANCH" >/dev/null 2>&1
+}
+
+ensure_current_branch() {
+  local branch
+  branch="$(git -C "$ROOT_DIR" branch --show-current 2>/dev/null || true)"
+  if [[ -z "$branch" || "$branch" == "HEAD" ]]; then
+    git -C "$ROOT_DIR" checkout -B "$DEFAULT_BRANCH" >/dev/null 2>&1
+    branch="$DEFAULT_BRANCH"
+  fi
+  printf '%s' "$branch"
+}
+
+ensure_remote() {
+  if git -C "$ROOT_DIR" remote get-url "$REMOTE_NAME" >/dev/null 2>&1; then
+    return
+  fi
+
+  require_cmd gh
+  if ! gh auth status >/dev/null 2>&1; then
+    fail "GitHub CLI 尚未认证，请先执行 gh auth login。"
+  fi
+
+  case "$VISIBILITY" in
+    private|public|internal) ;;
+    *)
+      fail "PO_GITHUB_VISIBILITY 仅支持 private / public / internal"
+      ;;
+  esac
+
+  gh repo create "$REPO_NAME" --"$VISIBILITY" --source "$ROOT_DIR" --remote "$REMOTE_NAME" >/dev/null
+}
+
+ensure_git_repo
+BRANCH_NAME="$(ensure_current_branch)"
+HAS_COMMITS=0
+if git -C "$ROOT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+  HAS_COMMITS=1
+fi
+
+if [[ "$HAS_COMMITS" -eq 0 ]]; then
+  git -C "$ROOT_DIR" add .
+else
+  git -C "$ROOT_DIR" add package.json deploy/aliyun/release-version.json
+fi
+
+if ! git -C "$ROOT_DIR" diff --cached --quiet; then
+  git -C "$ROOT_DIR" commit -m "chore(release): ${GIT_TAG} ${RELEASE_TYPE_ZH}" >/dev/null
+fi
+
+BRANCH_NAME="$(ensure_current_branch)"
+ensure_remote
+
+if ! git -C "$ROOT_DIR" rev-parse "$GIT_TAG" >/dev/null 2>&1; then
+  git -C "$ROOT_DIR" tag -a "$GIT_TAG" -m "Release ${DISPLAY_VERSION}" >/dev/null
+fi
+
+git -C "$ROOT_DIR" push -u "$REMOTE_NAME" "$BRANCH_NAME"
+git -C "$ROOT_DIR" push "$REMOTE_NAME" "$GIT_TAG"
+
+echo "GitHub 已同步: ${DISPLAY_VERSION} (${GIT_TAG})"
 EOF
 
 cat > "$START_SCRIPT" <<EOF
@@ -497,10 +884,12 @@ touch \\
 echo "Server directories prepared under \${PROJECT_DIR}"
 EOF
 
-chmod +x "$PACKAGE_SCRIPT" "$DEPLOY_SCRIPT" "$START_SCRIPT" "$BOOTSTRAP_SCRIPT"
+chmod +x "$PACKAGE_SCRIPT" "$DEPLOY_SCRIPT" "$START_SCRIPT" "$BOOTSTRAP_SCRIPT" "$VERSION_SCRIPT" "$GIT_SYNC_SCRIPT"
 
 echo "Generated:"
 echo "  $PACKAGE_SCRIPT"
 echo "  $DEPLOY_SCRIPT"
+echo "  $VERSION_SCRIPT"
+echo "  $GIT_SYNC_SCRIPT"
 echo "  $START_SCRIPT"
 echo "  $BOOTSTRAP_SCRIPT"

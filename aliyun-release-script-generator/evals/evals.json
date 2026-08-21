@@ -3,20 +3,20 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "请参考 product-opportunity-miniapp 的 deploy/aliyun 脚本，先读取我当前项目的 package.json、apps 目录、构建命令、dist 目录、启动入口，然后生成 package_release.sh、deploy_release.sh、start-prod.sh、server-bootstrap.sh。",
-      "expected_output": "先探查 repo，再生成 4 个脚本；不会硬编码参考项目的 workspace 名称和 dist 路径。",
+      "prompt": "请参考 product-opportunity-miniapp 的 deploy/aliyun 脚本，先读取我当前项目的 package.json、apps 目录、构建命令、dist 目录、启动入口，然后生成 package_release.sh、deploy_release.sh、start-prod.sh、server-bootstrap.sh、manage_release_version.mjs、sync_git_release.sh。",
+      "expected_output": "先探查 repo，再生成 6 个脚本；不会硬编码参考项目的 workspace 名称和 dist 路径，并补齐版本与 GitHub 同步能力。",
       "files": []
     },
     {
       "id": 2,
-      "prompt": "为当前项目生成阿里云发布脚本，如果没有 admin 前端就不要保留 admin-web 逻辑。",
-      "expected_output": "能识别当前项目是否存在第二个静态前端，并据此裁剪 package/deploy/bootstrap 脚本。",
+      "prompt": "为当前项目生成阿里云发布脚本，发布类型请按中文三选一处理，如果没有 admin 前端就不要保留 admin-web 逻辑。",
+      "expected_output": "能识别当前项目是否存在第二个静态前端，并据此裁剪 package/deploy/bootstrap 脚本；同时使用 大改版 / 新功能 / 修复优化 作为发布分类输入。",
       "files": []
     },
     {
       "id": 3,
-      "prompt": "请为当前项目补齐 deploy/aliyun/scripts 下的上线脚本，如果健康检查路径不存在，先指出再给最小兼容方案。",
-      "expected_output": "不会偷偷假设 /health；会根据 repo 发现结果决定保留 HTTP health check 还是给出兼容方案。",
+      "prompt": "请为当前项目补齐 deploy/aliyun/scripts 下的上线脚本，并增加发布成功后的版本写回和 GitHub 自动同步；如果健康检查路径不存在，先指出再给最小兼容方案。",
+      "expected_output": "不会偷偷假设 /health；会根据 repo 发现结果决定保留 HTTP health check 还是给出兼容方案，并在部署成功后才写回版本号和执行 git push。",
       "files": []
     }
   ]

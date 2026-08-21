@@ -1,6 +1,6 @@
 ---
 name: aliyun-release-script-generator
-description: 为当前项目生成阿里云 ECS 发布脚本，包括 package_release.sh、deploy_release.sh、start-prod.sh、server-bootstrap.sh。用户一旦提到阿里云、ECS、发布脚本、deploy_release.sh、package_release.sh、start-prod.sh、上线脚本、打包脚本、部署脚手架，就优先使用这个 skill。这个 skill 必须先读取当前项目的 package.json、工作区、构建命令、dist 产物、启动入口和健康检查，再生成脚本，绝不能只凭项目名或拍脑袋假设目录结构。
+description: 为当前项目生成阿里云 ECS 发布脚本，并补齐发布版本管理与 GitHub 自动同步能力，包括 package_release.sh、deploy_release.sh、start-prod.sh、server-bootstrap.sh、manage_release_version.mjs、sync_git_release.sh。用户一旦提到阿里云、ECS、发布脚本、deploy_release.sh、package_release.sh、start-prod.sh、版本号管理、自动建仓、GitHub 发布、上线脚本、打包脚本、部署脚手架，就优先使用这个 skill。这个 skill 必须先读取当前项目的 package.json、工作区、构建命令、dist 产物、启动入口和健康检查，再生成脚本，绝不能只凭项目名或拍脑袋假设目录结构。
 ---
 
 # Aliyun Release Script Generator
@@ -15,6 +15,8 @@ description: 为当前项目生成阿里云 ECS 发布脚本，包括 package_re
 - 生成或更新 `deploy/aliyun/scripts/deploy_release.sh`
 - 生成或更新 `deploy/aliyun/scripts/start-prod.sh`
 - 生成或更新 `deploy/aliyun/scripts/server-bootstrap.sh`
+- 生成或更新 `deploy/aliyun/scripts/manage_release_version.mjs`
+- 生成或更新 `deploy/aliyun/scripts/sync_git_release.sh`
 
 这个 skill 不应该跳过 repo 探查。脚本是否可用，完全取决于是否先读清楚当前项目。
 
@@ -32,6 +34,8 @@ description: 为当前项目生成阿里云 ECS 发布脚本，包括 package_re
 8. 健康检查路径
 9. 是否存在第二个静态前端，例如 `admin-web`
 10. 现有 `deploy/aliyun` 目录是否已经存在
+11. 当前项目是否已经有 git 仓和远端
+12. 当前项目是否已经有版本号或发布元数据
 
 优先使用这些命令：
 
@@ -65,6 +69,8 @@ find . -maxdepth 3 -type f -name 'package.json'
 - `deploy/aliyun/scripts/deploy_release.sh`
 - `deploy/aliyun/scripts/start-prod.sh`
 - `deploy/aliyun/scripts/server-bootstrap.sh`
+- `deploy/aliyun/scripts/manage_release_version.mjs`
+- `deploy/aliyun/scripts/sync_git_release.sh`
 
 除非用户明确要求只输出文本，否则优先直接在当前项目里创建或更新这些文件。
 
@@ -72,7 +78,7 @@ find . -maxdepth 3 -type f -name 'package.json'
 
 1. 简短总结你识别到的项目结构
 2. 说明已生成或更新哪些脚本
-3. 提醒用户仍需自己提供的内容，例如真实域名、真实 env secrets、Nginx 和 systemd 文件
+3. 提醒用户仍需自己提供的内容，例如真实域名、真实 env secrets、Nginx / systemd 文件、GitHub 认证
 4. 说明你跑过的最小验证
 
 ## Generation Rules
@@ -83,6 +89,7 @@ find . -maxdepth 3 -type f -name 'package.json'
 
 - 构建后端
 - 构建一个或多个前端
+- 生成本次发布的版本计划 sidecar
 - 创建 stage 目录
 - 复制运行所需文件
 - 打包为 `deploy/aliyun/release/<project>-<stamp>.tgz`
@@ -93,6 +100,7 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 是否需要在构建时注入前端环境变量
 - 后端产物是整个 `dist` 目录还是其中某个子目录
 - 是否需要 `web/` 和 `admin-web/` 两套静态目录
+- 版本计划文件应该如何与发布包关联
 
 ### deploy_release.sh
 
@@ -103,6 +111,8 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 上传发布包和配置文件
 - 在远端切换 release
 - 清理更老的远端 release
+- 在本地成功写回发布版本
+- 自动同步到 GitHub 仓
 - 安装生产依赖
 - 重启服务
 - 执行健康检查
@@ -114,12 +124,55 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 远端要不要同步 `admin-web`
 - `start-prod.sh` 要从哪里启动服务
 - 远端 release 默认保留几个版本
+- GitHub 远端仓默认如何创建
 
 默认行为：
 
 - 远端 release 目录默认保留最新 `2` 个版本
 - 支持通过 `PO_REMOTE_RELEASE_KEEP_COUNT` 覆盖
 - 无论如何至少保留 `1` 个版本
+- 部署成功后才真正写回版本文件并执行 git push
+
+### manage_release_version.mjs
+
+这个脚本负责：
+
+- 读取根目录 `package.json`
+- 读取或初始化 `deploy/aliyun/release-version.json`
+- 根据中文发布类型生成版本计划
+- 在部署成功后写回 `semver + buildCount`
+
+发布类型固定使用中文三选一：
+
+- `大改版`：架构级调整、技术栈切换、模块边界重组、明显影响多个子系统
+- `新功能`：新增用户可感知能力、页面、接口、业务流程
+- `修复优化`：bug 修复、性能优化、交互微调、兼容性修复、已有能力改良
+
+版本规则固定为：
+
+- `大改版` => major +1，minor/patch 归零
+- `新功能` => minor +1，patch 归零
+- `修复优化` => patch +1
+- `buildCount` 每次成功发布后全局 +1
+- `package.json.version` 只保存 `semver`
+- 展示版本使用 `x.y.z (buildCount)`
+- Git tag 使用 `v<semver>-build.<buildCount>`
+
+### sync_git_release.sh
+
+这个脚本负责：
+
+- 检查本地 `.git`
+- 如有需要自动 `git init`
+- 如果远端不存在则优先通过 `gh repo create` 创建 GitHub private repo
+- 提交版本文件、打 tag、push 分支与 tag
+
+默认行为：
+
+- GitHub repo 名默认等于 `project_name`
+- remote 名默认 `origin`
+- 默认分支优先 `main`
+- 默认创建 private repo
 
 如果健康检查路径不存在：
 
@@ -189,3 +242,4 @@ bash /Users/jiamo/Documents/Skills/aliyun-release-script-generator/scripts/rende
 - 不要假设所有项目都用 npm workspace，但如果 repo 明显在用，就顺着现有方式生成。
 - 不要引入 Docker、PM2、pnpm、yarn，除非当前项目已经在用。
 - 不要改写用户已有的部署架构，只做同风格补全和定制。
+- 不要让用户直接选择英文 `major/minor/patch` 或 `architecture/feature/fix`；优先用中文三选一。

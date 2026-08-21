@@ -47,3 +47,15 @@
 - 启动入口
 - 健康检查路径
 - 是否存在 `admin-web`
+
+## Extended Release Management
+
+版本管理和 GitHub 自动同步不是参考项目原有能力，而是这个 skill 新增的统一扩展层。
+
+扩展规则固定为：
+
+- 发布时使用中文发布类型：`大改版` / `新功能` / `修复优化`
+- 版本存储在 `package.json.version` 和 `deploy/aliyun/release-version.json`
+- 发布成功后才真正写回版本号
+- Git tag 形态为 `v<semver>-build.<buildCount>`
+- 若本地已有 git 结构，优先做增量复用，不重建仓库
