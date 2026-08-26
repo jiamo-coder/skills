@@ -25,6 +25,7 @@
 - 安装生产依赖
 - 重启 `systemd`
 - 调用本地 health endpoint 验证
+- 健康检查成功后调用 `configure_nginx_site.sh`，首次才初始化站点和证书
 
 ## start-prod.sh
 
@@ -59,3 +60,26 @@
 - 发布成功后才真正写回版本号
 - Git tag 形态为 `v<semver>-build.<buildCount>`
 - 若本地已有 git 结构，优先做增量复用，不重建仓库
+- 提交信息由当前 Codex Agent 根据真实 diff 和检查结果生成，不依赖外部模型 Token
+- 发布前必须展示结构化提交正文和精确文件清单，用户确认后才能创建本机审批 sidecar
+- 审批与 release tag、工作区指纹绑定；确认后发生变化必须重新确认
+- 发布成功后只提交审批清单和版本文件，禁止静默加入其他未跟踪文件
+
+## Local Server Connection Config
+
+- 首次生成脚本时创建 `deploy/aliyun/.deploy.local.sh`
+- 文件记录服务器 IP/Host、SSH 用户、端口、认证方式、密码或私钥路径及远端目录
+- 密码只通过隐藏输入或本机手工填写，不在对话或命令参数中传递
+- 文件权限必须为 `600`，并加入根 `.gitignore`
+- 旧项目已有配置时复用，禁止自动覆盖
+
+## Managed Nginx And Certbot
+
+- 新项目配置固定为 `/etc/nginx/projects.d/<project>.conf`
+- `/etc/nginx/conf.d/00-managed-projects.conf` 只放一条 projects include
+- 首次先用 HTTP-bootstrap 提供 webroot challenge，再申请证书并原子切换 HTTPS
+- 最终配置保留 80 端口 challenge 与 HTTPS 跳转，支持 Certbot 续期
+- 受管配置与证书齐全时，后续发布只做 `nginx -t`，不调用 Certbot、不 reload
+- 未带受管标记的现有配置绝不覆盖；旧 `conf.d` 项目默认按 `skip` 兼容
+- 证书失败必须终止部署，因此版本写回和 Git 同步不会发生
+- 不负责阿里云 DNS；80/443、Nginx、Certbot 和 Certbot 账户是服务器前置条件

@@ -3,8 +3,8 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "请参考 product-opportunity-miniapp 的 deploy/aliyun 脚本，先读取我当前项目的 package.json、apps 目录、构建命令、dist 目录、启动入口，然后生成 package_release.sh、deploy_release.sh、start-prod.sh、server-bootstrap.sh、manage_release_version.mjs、sync_git_release.sh。",
-      "expected_output": "先探查 repo，再生成 6 个脚本；不会硬编码参考项目的 workspace 名称和 dist 路径，并补齐版本与 GitHub 同步能力。",
+      "prompt": "请参考 product-opportunity-miniapp 的 deploy/aliyun 脚本，先读取我当前项目的 package.json、apps 目录、构建命令、dist 目录、启动入口，然后生成 package_release.sh、deploy_release.sh、start-prod.sh、server-bootstrap.sh、manage_release_version.mjs、manage_git_release_commit.mjs、sync_git_release.sh。",
+      "expected_output": "先探查 repo，再生成 9 个脚本和本机私有服务器配置，其中包含 configure_nginx_site.sh；不会硬编码参考项目的 workspace 名称和 dist 路径，并补齐版本、结构化 Git 确认、GitHub 同步和首次 Nginx/证书初始化能力。",
       "files": []
     },
     {
@@ -17,6 +17,30 @@
       "id": 3,
       "prompt": "请为当前项目补齐 deploy/aliyun/scripts 下的上线脚本，并增加发布成功后的版本写回和 GitHub 自动同步；如果健康检查路径不存在，先指出再给最小兼容方案。",
       "expected_output": "不会偷偷假设 /health；会根据 repo 发现结果决定保留 HTTP health check 还是给出兼容方案，并在部署成功后才写回版本号和执行 git push。",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "第一次给当前项目生成阿里云发布脚本，服务器是 47.1.2.3，SSH 用户 root，端口 22，使用密码登录。请把服务器配置也落到项目里。",
+      "expected_output": "生成 init_deploy_config.sh 和权限为 600 的 deploy/aliyun/.deploy.local.sh，记录完整服务器连接字段、项目域名、业务端口和 Nginx/Certbot 状态变量并加入 .gitignore；不会要求用户在聊天中发送真实密码，也不会把配置提交到 Git。",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "给当前新项目生成发布脚本。首次发布自动生成独立 Nginx 配置并签证书，第二次发布不要再申请证书；如果证书失败，版本号和 tag 都不能变化。",
+      "expected_output": "生成 configure_nginx_site.sh 并在应用健康检查后调用；auto 模式按服务器配置和证书状态决定初始化或跳过，Certbot 失败会使部署失败并阻止版本 apply 和 Git 同步。",
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "这是之前用旧版 skill 的项目，Nginx 仍在 /etc/nginx/conf.d/legacy-app.conf。升级发布脚本但不要迁移或覆盖现有站点。",
+      "expected_output": "保留旧 Nginx 配置；若旧配置未显式设置 PO_NGINX_SETUP_MODE，则兼容为 skip，只执行 nginx -t，不运行 Certbot 或 reload。",
+      "files": []
+    },
+    {
+      "id": 7,
+      "prompt": "发布前请根据当前改动和真实测试结果生成结构化 Git 提交信息，列出拟提交文件让我编辑确认；没有我的确认不要提交或推送。",
+      "expected_output": "输出符合固定六字段模板的提交草稿和精确文件清单，验证方式只引用实际命令结果；用户确认后才生成本机审批 sidecar，发布脚本会在上传前校验 tag 和工作区指纹，全程不要求模型 API Token。",
       "files": []
     }
   ]

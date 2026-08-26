@@ -1,6 +1,6 @@
 ---
 name: aliyun-release-script-generator
-description: 为当前项目生成阿里云 ECS 发布脚本，并补齐发布版本管理与 GitHub 自动同步能力，包括 package_release.sh、deploy_release.sh、start-prod.sh、server-bootstrap.sh、manage_release_version.mjs、sync_git_release.sh。用户一旦提到阿里云、ECS、发布脚本、deploy_release.sh、package_release.sh、start-prod.sh、版本号管理、自动建仓、GitHub 发布、上线脚本、打包脚本、部署脚手架，就优先使用这个 skill。这个 skill 必须先读取当前项目的 package.json、工作区、构建命令、dist 产物、启动入口和健康检查，再生成脚本，绝不能只凭项目名或拍脑袋假设目录结构。
+description: 为当前项目生成阿里云 ECS 发布脚本、本机服务器连接配置、独立 Nginx/Certbot 首次初始化、发布版本管理与 GitHub 自动同步能力，包括初始化配置、打包、部署、启动、Nginx、版本和 Git 同步脚本。用户一旦提到阿里云、ECS、发布脚本、服务器 IP、SSH 配置、Nginx、Certbot、版本号管理、自动建仓、GitHub 发布、上线脚本或部署脚手架，就优先使用这个 skill。必须先读取当前项目的真实构建、产物、启动和健康检查结构，不能只凭项目名假设。
 ---
 
 # Aliyun Release Script Generator
@@ -16,7 +16,11 @@ description: 为当前项目生成阿里云 ECS 发布脚本，并补齐发布�
 - 生成或更新 `deploy/aliyun/scripts/start-prod.sh`
 - 生成或更新 `deploy/aliyun/scripts/server-bootstrap.sh`
 - 生成或更新 `deploy/aliyun/scripts/manage_release_version.mjs`
+- 生成或更新 `deploy/aliyun/scripts/manage_git_release_commit.mjs`
 - 生成或更新 `deploy/aliyun/scripts/sync_git_release.sh`
+- 生成或更新 `deploy/aliyun/scripts/init_deploy_config.sh`
+- 生成或更新 `deploy/aliyun/scripts/configure_nginx_site.sh`
+- 首次调用时自动创建本机私有的 `deploy/aliyun/.deploy.local.sh`
 
 这个 skill 不应该跳过 repo 探查。脚本是否可用，完全取决于是否先读清楚当前项目。
 
@@ -36,6 +40,9 @@ description: 为当前项目生成阿里云 ECS 发布脚本，并补齐发布�
 10. 现有 `deploy/aliyun` 目录是否已经存在
 11. 当前项目是否已经有 git 仓和远端
 12. 当前项目是否已经有版本号或发布元数据
+13. 是否已有 `deploy/aliyun/.deploy.local.sh`，以及它是否已经被 Git 忽略
+14. 服务器 IP/Host、SSH 用户、SSH 端口与认证方式是否已有本机记录
+15. 项目域名、Nginx 模板和当前远端 Nginx 管理方式
 
 优先使用这些命令：
 
@@ -70,7 +77,12 @@ find . -maxdepth 3 -type f -name 'package.json'
 - `deploy/aliyun/scripts/start-prod.sh`
 - `deploy/aliyun/scripts/server-bootstrap.sh`
 - `deploy/aliyun/scripts/manage_release_version.mjs`
+- `deploy/aliyun/scripts/manage_git_release_commit.mjs`
 - `deploy/aliyun/scripts/sync_git_release.sh`
+- `deploy/aliyun/scripts/init_deploy_config.sh`
+- `deploy/aliyun/scripts/configure_nginx_site.sh`
+- `deploy/aliyun/.deploy.local.sh`（首次生成，权限 `600`，禁止提交）
+- `deploy/aliyun/.git-release-approval.local.json`（每次发布前由用户确认后生成，权限 `600`，禁止提交）
 
 除非用户明确要求只输出文本，否则优先直接在当前项目里创建或更新这些文件。
 
@@ -80,6 +92,35 @@ find . -maxdepth 3 -type f -name 'package.json'
 2. 说明已生成或更新哪些脚本
 3. 提醒用户仍需自己提供的内容，例如真实域名、真实 env secrets、Nginx / systemd 文件、GitHub 认证
 4. 说明你跑过的最小验证
+
+## First-Run Server Config
+
+首次在一个项目调用本 skill 时，如果 `deploy/aliyun/.deploy.local.sh` 不存在，必须自动创建，不能只在回答里展示模板。
+
+配置至少包含：
+
+- `PO_DEPLOY_HOST`：服务器 IP 或域名
+- `PO_DEPLOY_USER`：SSH 账号
+- `PO_DEPLOY_PORT`：SSH 端口，默认 `22`
+- `PO_SSH_AUTH_METHOD`：`password | key | agent`
+- `PO_SSH_PASSWORD`：仅密码认证使用
+- `PO_SSH_KEY_FILE`：仅私钥认证使用
+- `PO_PROJECT_DOMAIN`：项目公网域名
+- `PO_APP_PORT`：后端服务监听端口
+- `PO_REMOTE_NGINX_SITES_DIR`：默认 `/etc/nginx/projects.d`
+- `PO_REMOTE_NGINX_INCLUDE_CONF`：默认 `/etc/nginx/conf.d/00-managed-projects.conf`
+- `PO_CERTBOT_WEBROOT`：默认 `/var/www/certbot`
+- `PO_NGINX_SETUP_MODE`：`auto | skip | force`，默认 `auto`
+- 项目的远端根目录、env、systemd、Nginx、静态目录和 release 保留数
+
+执行约束：
+
+- 非敏感信息缺失时，可以一次询问服务器 IP、SSH 账号、SSH 端口和认证方式。
+- 不要让用户在聊天里发送密码或私钥内容。密码应通过 `init_deploy_config.sh` 的隐藏输入写入，或由用户在本机文件中填写。
+- 创建前先检查旧文件；存在时只复用，不覆盖。
+- 创建后执行 `chmod 600 deploy/aliyun/.deploy.local.sh`。
+- 自动把 `/deploy/aliyun/.deploy.local.sh` 加入项目根 `.gitignore`，并确认未被 Git 跟踪。
+- 生成器必须接收或从 env 模板提取 `--app-port`，并可接收 `--deploy-host`、`--deploy-user`、`--deploy-port`、`--ssh-auth-method`、`--ssh-key-file`；无服务器连接值时也要落下完整字段，发布前再补齐。
 
 ## Generation Rules
 
@@ -116,6 +157,7 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 安装生产依赖
 - 重启服务
 - 执行健康检查
+- 在应用健康检查成功后按服务器真实状态初始化或校验独立 Nginx 站点
 
 生成时必须根据当前项目决定：
 
@@ -125,6 +167,7 @@ find . -maxdepth 3 -type f -name 'package.json'
 - `start-prod.sh` 要从哪里启动服务
 - 远端 release 默认保留几个版本
 - GitHub 远端仓默认如何创建
+- SSH 认证方式是密码、私钥还是 agent；旧项目只有 `PO_SSH_PASSWORD` 时保持兼容
 
 默认行为：
 
@@ -132,6 +175,73 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 支持通过 `PO_REMOTE_RELEASE_KEEP_COUNT` 覆盖
 - 无论如何至少保留 `1` 个版本
 - 部署成功后才真正写回版本文件并执行 git push
+- Nginx/证书初始化失败属于部署失败，不写回版本号、不提交、不打 tag
+- 上传发布包前必须验证与当前 release plan 匹配的 Git 发布确认；缺失、tag 不一致或确认后工作区变化时立即停止
+
+## Structured Git Confirmation
+
+每次发布前，当前 Codex Agent 必须先读取 `git status --short`、`git diff` 和版本计划，并至少执行一项真实检查。直接使用当前 Agent 生成简介，不调用模型 API，不要求配置 OpenAI、DeepSeek 或其他模型 Token。
+
+提交信息固定为：
+
+```text
+<type>(<scope>): <明确的实现结果>
+
+问题/需求：
+实现结果：
+影响范围：
+验证方式：
+关联任务：
+风险与回滚：
+```
+
+规则：
+
+- `type` 仅使用 `feat | fix | refactor | perf | docs | test | build | ci | chore`。
+- 标题必须写清对象、动作和实现结果，`scope` 根据项目或模块推断。
+- 正文六个字段必须全部保留；“问题/需求”和“实现结果”至少一项有效。
+- “验证方式”只能记录本次实际运行的命令和结果，命令使用反引号包裹；禁止把计划执行写成已经通过。
+- “关联任务”支持小葡萄任务 ID、项目链接、Gitee Issue/PR；没有时写“无”。
+- Agent 必须同时展示拟提交文件清单。已有仓库默认包含全部已跟踪改动和版本文件，未跟踪文件必须单独说明并确认。
+- 首次建仓必须展示全部非忽略文件并明确确认，不能静默 `git add .`。
+- 用户可以修改标题、正文和文件范围。只有用户明确确认后，Agent 才调用 `manage_git_release_commit.mjs approve` 写入本机审批文件。
+- 手工直接运行 `deploy_release.sh` 且没有有效审批文件时必须失败，不能自动生成提交信息或回退到终端确认。
+
+建议确认命令：
+
+```bash
+node deploy/aliyun/scripts/manage_git_release_commit.mjs approve \
+  --message-file /tmp/release-commit-message.txt \
+  --paths-file /tmp/release-commit-paths.txt \
+  --git-tag <version-plan.gitTag>
+```
+
+当用户明确确认未跟踪文件时增加 `--allow-untracked true`；首次建仓增加 `--allow-initial-all true`。
+
+### configure_nginx_site.sh
+
+这个脚本负责服务器侧独立站点初始化。每个新项目配置为 `/etc/nginx/projects.d/<project_name>.conf`，统一入口 `/etc/nginx/conf.d/00-managed-projects.conf` 只能包含 `include /etc/nginx/projects.d/*.conf;`。
+
+首次初始化顺序固定为：
+
+1. 检查 Nginx、Certbot、`certbot show_account`、域名解析和配置冲突
+2. 创建全局 include 与 `/var/www/certbot`
+3. 安装带受管标记的 HTTP-bootstrap 配置
+4. 执行 `nginx -t` 并 reload
+5. 执行 `certbot certonly --webroot --non-interactive --agree-tos`
+6. 校验证书文件，原子替换为最终 HTTPS 配置
+7. 再次 `nginx -t` 并 reload
+8. 若续期 deploy hook 不存在，则创建 `10-reload-nginx.sh`；已有文件不覆盖
+
+`PO_NGINX_SETUP_MODE` 规则：
+
+- `auto`：配置和证书齐全只做只读 `nginx -t`；证书已有但配置缺失时直接安装 HTTPS；受管 bootstrap 存在且证书缺失时恢复签发；两者缺失时完整初始化。
+- `skip`：只做 `nginx -t`，不上传、不安装、不 reload；用于人工维护或旧式 `/etc/nginx/conf.d/<project>.conf` 项目。
+- `force`：仅允许覆盖带本 skill 受管标记的配置，用于域名或端口变化；未带标记的配置即使 force 也拒绝覆盖。
+
+证书签发失败时必须保留可用的 HTTP-bootstrap 配置并返回失败，禁止用 `|| true` 吞掉错误。已有 `/etc/nginx/conf.d/*.conf` 不迁移；旧 `.deploy.local.sh` 未设置模式且明确使用旧式 `conf.d` 项目路径时，生成脚本应兼容为 `skip`。
+
+本 skill 不操作阿里云 DNS。自动签发前要求域名 A 记录已生效、80/443 可达、服务器已安装 Nginx/Certbot 并存在可复用的 Certbot 账户。
 
 ### manage_release_version.mjs
 
@@ -165,7 +275,11 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 检查本地 `.git`
 - 如有需要自动 `git init`
 - 如果远端不存在则优先通过 `gh repo create` 创建 GitHub private repo
-- 提交版本文件、打 tag、push 分支与 tag
+- 从已确认的本机审批文件读取结构化提交正文和精确文件清单
+- 只提交确认清单、`package.json` 和 `deploy/aliyun/release-version.json`
+- 拒绝暂存区中的未确认文件
+- 使用 `git commit -F` 提交，成功 push 后消费本次审批文件
+- 打 tag、push 分支与 tag
 
 默认行为：
 
@@ -173,6 +287,17 @@ find . -maxdepth 3 -type f -name 'package.json'
 - remote 名默认 `origin`
 - 默认分支优先 `main`
 - 默认创建 private repo
+
+### init_deploy_config.sh
+
+这个脚本负责：
+
+- 首次创建 `deploy/aliyun/.deploy.local.sh`
+- 交互收集服务器 IP、SSH 账号、端口和认证方式
+- 对密码使用隐藏输入，不在 stdout 输出
+- 以 shell-safe 方式写入变量并设置权限 `600`
+- 自动补齐根 `.gitignore`
+- 已有配置时拒绝覆盖，只修正权限与 ignore 规则
 
 如果健康检查路径不存在：
 
@@ -243,3 +368,6 @@ bash /Users/jiamo/Documents/Skills/aliyun-release-script-generator/scripts/rende
 - 不要引入 Docker、PM2、pnpm、yarn，除非当前项目已经在用。
 - 不要改写用户已有的部署架构，只做同风格补全和定制。
 - 不要让用户直接选择英文 `major/minor/patch` 或 `architecture/feature/fix`；优先用中文三选一。
+- 不要把真实 SSH 密码、私钥内容或 token 写进 skill 输出、命令参数、日志、示例或 Git 历史。
+- 不要调用 OpenAI、DeepSeek 或其他外部模型来生成提交简介；当前 Agent 直接根据真实 diff 和验证结果生成。
+- 未获得用户明确确认时，不要创建审批文件、执行 Git commit、tag 或 push。
