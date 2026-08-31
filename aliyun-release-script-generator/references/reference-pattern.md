@@ -61,8 +61,8 @@
 - Git tag 形态为 `v<semver>-build.<buildCount>`
 - 若本地已有 git 结构，优先做增量复用，不重建仓库
 - 提交信息由当前 Codex Agent 根据真实 diff 和检查结果生成，不依赖外部模型 Token
-- 发布前必须展示结构化提交正文和精确文件清单，用户确认后才能创建本机审批 sidecar
-- 审批与 release tag、工作区指纹绑定；确认后发生变化必须重新确认
+- 发布前必须展示结构化提交正文和精确文件清单，展示后立即由 Agent 创建本机审批 sidecar，不等待二次人工确认
+- 审批与 release tag、工作区指纹绑定；梳理后发生变化必须重新生成
 - 发布成功后只提交审批清单和版本文件，禁止静默加入其他未跟踪文件
 
 ## Local Server Connection Config

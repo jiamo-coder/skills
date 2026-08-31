@@ -1,6 +1,6 @@
 ---
 name: aliyun-release-script-generator
-description: 为当前项目生成阿里云 ECS 发布脚本、本机服务器连接配置、独立 Nginx/Certbot 首次初始化、发布版本管理与 GitHub 自动同步能力，包括初始化配置、打包、部署、启动、Nginx、版本和 Git 同步脚本。用户一旦提到阿里云、ECS、发布脚本、服务器 IP、SSH 配置、Nginx、Certbot、版本号管理、自动建仓、GitHub 发布、上线脚本或部署脚手架，就优先使用这个 skill。必须先读取当前项目的真实构建、产物、启动和健康检查结构，不能只凭项目名假设。
+description: 为当前项目生成阿里云 ECS 发布脚本、本机服务器连接配置、独立 Nginx/Certbot 首次初始化、发布版本管理、结构化 Git 自动审批与 GitHub 同步能力。用户提到阿里云、ECS、发布脚本、Nginx、Certbot、版本管理、自动提交、GitHub 发布或上线脚手架时优先使用；必须先读取项目真实构建、产物、启动和健康检查结构。
 ---
 
 # Aliyun Release Script Generator
@@ -82,7 +82,7 @@ find . -maxdepth 3 -type f -name 'package.json'
 - `deploy/aliyun/scripts/init_deploy_config.sh`
 - `deploy/aliyun/scripts/configure_nginx_site.sh`
 - `deploy/aliyun/.deploy.local.sh`（首次生成，权限 `600`，禁止提交）
-- `deploy/aliyun/.git-release-approval.local.json`（每次发布前由用户确认后生成，权限 `600`，禁止提交）
+- `deploy/aliyun/.git-release-approval.local.json`（每次发布前由 Agent 梳理后自动生成，权限 `600`，禁止提交）
 
 除非用户明确要求只输出文本，否则优先直接在当前项目里创建或更新这些文件。
 
@@ -176,9 +176,9 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 无论如何至少保留 `1` 个版本
 - 部署成功后才真正写回版本文件并执行 git push
 - Nginx/证书初始化失败属于部署失败，不写回版本号、不提交、不打 tag
-- 上传发布包前必须验证与当前 release plan 匹配的 Git 发布确认；缺失、tag 不一致或确认后工作区变化时立即停止
+- 上传发布包前必须验证与当前 release plan 匹配的 Git 发布审批；缺失、tag 不一致或梳理后工作区变化时立即停止
 
-## Structured Git Confirmation
+## Structured Git Auto Approval
 
 每次发布前，当前 Codex Agent 必须先读取 `git status --short`、`git diff` 和版本计划，并至少执行一项真实检查。直接使用当前 Agent 生成简介，不调用模型 API，不要求配置 OpenAI、DeepSeek 或其他模型 Token。
 
@@ -202,12 +202,15 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 正文六个字段必须全部保留；“问题/需求”和“实现结果”至少一项有效。
 - “验证方式”只能记录本次实际运行的命令和结果，命令使用反引号包裹；禁止把计划执行写成已经通过。
 - “关联任务”支持小葡萄任务 ID、项目链接、Gitee Issue/PR；没有时写“无”。
-- Agent 必须同时展示拟提交文件清单。已有仓库默认包含全部已跟踪改动和版本文件，未跟踪文件必须单独说明并确认。
-- 首次建仓必须展示全部非忽略文件并明确确认，不能静默 `git add .`。
-- 用户可以修改标题、正文和文件范围。只有用户明确确认后，Agent 才调用 `manage_git_release_commit.mjs approve` 写入本机审批文件。
+- Agent 必须同时展示拟提交文件清单。已有仓库默认包含全部已跟踪改动和版本文件，未跟踪文件默认排除并在摘要中说明。
+- Agent 梳理并展示结构化正文和文件清单后，即视为本次发布审批完成；不要停下来请求“确认提交”或等待第二次回复。
+- 展示摘要后立即调用 `manage_git_release_commit.mjs approve` 写入本机审批文件，再继续执行发布、提交、tag 和 push。
+- 如果用户在本次请求中明确要求“只预览”“先别提交”或“让我修改”，才暂停自动审批并等待用户调整。
+- 未跟踪文件只有在 Agent 判断属于本次实现、完成敏感信息检查并明确列入摘要时，才使用 `--allow-untracked true` 自动授权。
+- 首次建仓必须审计并展示全部非忽略文件；确认没有凭证、私钥或本机配置后使用 `--allow-initial-all true`，不再请求二次人工确认。
 - 手工直接运行 `deploy_release.sh` 且没有有效审批文件时必须失败，不能自动生成提交信息或回退到终端确认。
 
-建议确认命令：
+自动审批命令：
 
 ```bash
 node deploy/aliyun/scripts/manage_git_release_commit.mjs approve \
@@ -216,7 +219,7 @@ node deploy/aliyun/scripts/manage_git_release_commit.mjs approve \
   --git-tag <version-plan.gitTag>
 ```
 
-当用户明确确认未跟踪文件时增加 `--allow-untracked true`；首次建仓增加 `--allow-initial-all true`。
+当摘要明确纳入未跟踪文件时增加 `--allow-untracked true`；首次建仓审计通过后增加 `--allow-initial-all true`。
 
 ### configure_nginx_site.sh
 
@@ -275,9 +278,9 @@ node deploy/aliyun/scripts/manage_git_release_commit.mjs approve \
 - 检查本地 `.git`
 - 如有需要自动 `git init`
 - 如果远端不存在则优先通过 `gh repo create` 创建 GitHub private repo
-- 从已确认的本机审批文件读取结构化提交正文和精确文件清单
+- 从 Agent 自动生成的本机审批文件读取结构化提交正文和精确文件清单
 - 只提交确认清单、`package.json` 和 `deploy/aliyun/release-version.json`
-- 拒绝暂存区中的未确认文件
+- 拒绝暂存区中未列入摘要的文件
 - 使用 `git commit -F` 提交，成功 push 后消费本次审批文件
 - 打 tag、push 分支与 tag
 
@@ -370,4 +373,4 @@ bash /Users/jiamo/Documents/Skills/aliyun-release-script-generator/scripts/rende
 - 不要让用户直接选择英文 `major/minor/patch` 或 `architecture/feature/fix`；优先用中文三选一。
 - 不要把真实 SSH 密码、私钥内容或 token 写进 skill 输出、命令参数、日志、示例或 Git 历史。
 - 不要调用 OpenAI、DeepSeek 或其他外部模型来生成提交简介；当前 Agent 直接根据真实 diff 和验证结果生成。
-- 未获得用户明确确认时，不要创建审批文件、执行 Git commit、tag 或 push。
+- 梳理并展示提交内容后直接创建审批文件并继续发布，不要额外请求人工确认；但用户明确要求预览或暂停时必须停止。

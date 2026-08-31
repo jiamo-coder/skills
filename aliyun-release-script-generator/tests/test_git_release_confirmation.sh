@@ -77,7 +77,7 @@ printf 'leave untracked\n' > "$PROJECT/note.txt"
 printf 'app.txt\n' > "$PATHS_FILE"
 
 cat > "$MESSAGE_FILE" <<'EOF'
-fix(release): 增加结构化审批并阻止未确认提交
+fix(release): 自动生成结构化审批并阻止清单外提交
 
 问题/需求：发布脚本会使用固定标题直接提交。
 实现结果：增加提交信息校验、文件确认和工作区漂移门禁。

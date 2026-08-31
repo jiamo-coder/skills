@@ -47,7 +47,7 @@
 - 当前已跟踪改动、未跟踪文件和已有暂存区内容
 - 结构化 Git 提交草稿、实际验证命令与结果
 - 小葡萄任务 ID、项目链接、Gitee Issue/PR 等关联任务
-- 用户是否已确认提交正文和精确文件清单
+- Agent 是否已展示结构化正文和精确文件清单，并自动生成本次审批
 
 ## Output Files
 
@@ -63,7 +63,7 @@
 - `deploy/aliyun/scripts/init_deploy_config.sh`
 - `deploy/aliyun/scripts/configure_nginx_site.sh`
 - `deploy/aliyun/.deploy.local.sh`（首次自动创建，本机私有）
-- `deploy/aliyun/.git-release-approval.local.json`（确认后创建，本机私有）
+- `deploy/aliyun/.git-release-approval.local.json`（梳理后自动创建，本机私有）
 
 可选依赖但不一定由这个 skill 生成：
 

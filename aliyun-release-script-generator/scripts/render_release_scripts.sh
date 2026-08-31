@@ -1531,11 +1531,11 @@ function workspaceFingerprint() {
 
 function readApproval(filePath, gitTag) {
   if (!fs.existsSync(filePath)) {
-    fail(`缺少已确认的 Git 发布信息: ${filePath}。请先通过 Codex Skill 生成、编辑并确认提交信息。`);
+    fail(`缺少 Git 发布审批信息: ${filePath}。请先通过 Codex Skill 梳理提交内容并自动生成审批文件。`);
   }
   const approval = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  if (approval.schemaVersion !== 1 || approval.confirmed !== true) fail('Git 发布确认文件无效或尚未确认。');
-  if (approval.gitTag !== gitTag) fail('Git 发布确认对应的 tag 与当前 release plan 不一致，请重新确认。');
+  if (approval.schemaVersion !== 1 || approval.confirmed !== true) fail('Git 发布审批文件无效。');
+  if (approval.gitTag !== gitTag) fail('Git 发布审批对应的 tag 与当前 release plan 不一致，请重新梳理并生成。');
   validateMessage(approval.message);
   if (!Array.isArray(approval.approvedPaths)) fail('Git 发布确认文件缺少提交路径。');
   return approval;
@@ -1576,7 +1576,7 @@ if (command === 'approve') {
     if (missingTracked.length) fail(`确认清单缺少已跟踪改动: ${missingTracked.join(', ')}`);
     const approvedUntracked = approvedPaths.filter((item) => untracked.includes(item));
     if (approvedUntracked.length && args['allow-untracked'] !== 'true') {
-      fail('确认清单包含未跟踪文件，必须在用户明确确认后设置 --allow-untracked true。');
+      fail('审批清单包含未跟踪文件，必须由 Agent 在提交摘要中明确列出后设置 --allow-untracked true。');
     }
     const valid = new Set([...tracked, ...(args['allow-untracked'] === 'true' ? untracked : [])]);
     const invalid = approvedPaths.filter((item) => !valid.has(item));
@@ -1594,7 +1594,7 @@ if (command === 'approve') {
     workspacePaths: fingerprint.paths,
     approvedAt: new Date().toISOString(),
   }, null, 2)}\n`);
-  console.log(`Git 发布信息已确认: ${approvalFile}`);
+  console.log(`Git 发布信息已自动审批: ${approvalFile}`);
   process.exit(0);
 }
 
@@ -1604,7 +1604,7 @@ if (command === 'verify') {
   const approval = readApproval(approvalFile, args['git-tag']);
   const fingerprint = workspaceFingerprint();
   if (fingerprint.hash !== approval.workspaceFingerprint || JSON.stringify(fingerprint.paths) !== JSON.stringify(approval.workspacePaths)) {
-    fail('确认后工作区或文件清单已变化，请重新生成并确认 Git 提交信息。');
+    fail('梳理后工作区或文件清单已变化，请重新梳理并生成 Git 提交信息。');
   }
   console.log('Git 发布确认校验通过。');
   process.exit(0);
@@ -1755,7 +1755,7 @@ while IFS= read -r -d '' staged_path; do
   [[ "$allowed" -eq 1 ]] || fail "暂存区包含未经确认的文件: $staged_path"
 done < <(git -C "$ROOT_DIR" diff --cached --name-only -z)
 
-git -C "$ROOT_DIR" diff --cached --quiet && fail "没有可提交的已确认改动。"
+git -C "$ROOT_DIR" diff --cached --quiet && fail "没有可提交的已审批改动。"
 git -C "$ROOT_DIR" commit -F "$MESSAGE_FILE" >/dev/null
 
 BRANCH_NAME="$(ensure_current_branch)"
