@@ -26,6 +26,7 @@
 - 重启 `systemd`
 - 调用本地 health endpoint 验证
 - 健康检查成功后调用 `configure_nginx_site.sh`，首次才初始化站点和证书
+- 新生成脚本按 `web/backend/data` 范围切换：前端不重启后端，后端核对近期异地验证，数据变更先做新备份并在本机校验；远端失败恢复旧版本
 
 ## start-prod.sh
 

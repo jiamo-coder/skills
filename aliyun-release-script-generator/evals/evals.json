@@ -42,6 +42,18 @@
       "prompt": "发布前请根据当前改动和真实测试结果梳理结构化 Git 提交信息；梳理完成就直接确认提交发布，不要再让我人工确认。",
       "expected_output": "输出符合固定六字段模板的提交摘要和精确文件清单，验证方式只引用实际命令结果；展示后立即自动生成本机审批 sidecar 并继续发布，上传前仍校验 tag 和工作区指纹，全程不要求模型 API Token。",
       "files": []
+    },
+    {
+      "id": 8,
+      "prompt": "这次只改前端样式，用阿里云发布 Skill 处理；不要对生产 SQLite 做备份或 quick_check。",
+      "expected_output": "检查实际差异后将审批范围写为 web，保留旧静态文件，前端切换及健康检查失败时恢复；不运行数据库备份、校验或后端重启。",
+      "files": []
+    },
+    {
+      "id": 9,
+      "prompt": "这个项目有 SQLite 迁移并批量更新生产数据，请按新版发布 Skill 生成脚本和每日异地备份。",
+      "expected_output": "识别真实 SQLite 路径与迁移兼容性，写入 data 范围；切换前在生产机限时生成一致性备份并传至本机限时 quick_check，设置 ECS systemd 和本机 macOS launchd 定时任务；失败不写版本、不提交或打 tag。",
+      "files": []
     }
   ]
 }

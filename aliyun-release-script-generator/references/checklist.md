@@ -35,6 +35,8 @@
 - 项目公网域名及其 A 记录是否已指向目标服务器
 - 服务器 80/443 是否可达，Nginx、Certbot 和 Certbot 账户是否就绪
 - 项目 Nginx 是新式受管配置、旧式 `conf.d` 配置还是人工维护配置
+- SQLite 文件实际路径、迁移/批量数据写入入口、健康端点及数据库权限
+- 48 小时内本机已校验备份和远端清单是否对应；异地拉取调度是否运行
 
 ## Packaging Facts
 
@@ -62,6 +64,7 @@
 - `deploy/aliyun/scripts/sync_git_release.sh`
 - `deploy/aliyun/scripts/init_deploy_config.sh`
 - `deploy/aliyun/scripts/configure_nginx_site.sh`
+- `deploy/aliyun/scripts/sqlite_backup.sh`、`pull_sqlite_backup.sh`、`install_sqlite_backup_schedule.sh`、`remote_release.sh`
 - `deploy/aliyun/.deploy.local.sh`（首次自动创建，本机私有）
 - `deploy/aliyun/.git-release-approval.local.json`（梳理后自动创建，本机私有）
 

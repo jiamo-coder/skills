@@ -1,6 +1,6 @@
 ---
 name: aliyun-release-script-generator
-description: 为当前项目生成阿里云 ECS 发布脚本、本机服务器连接配置、独立 Nginx/Certbot 首次初始化、发布版本管理、结构化 Git 自动审批与 GitHub 同步能力。用户提到阿里云、ECS、发布脚本、Nginx、Certbot、版本管理、自动提交、GitHub 发布或上线脚手架时优先使用；必须先读取项目真实构建、产物、启动和健康检查结构。
+description: 为当前项目生成阿里云 ECS 发布脚本、本机连接配置、独立 Nginx/Certbot 初始化、SQLite 分级备份与超时回退、版本管理及结构化 Git 自动审批。用户提到阿里云、ECS、发布脚本、SQLite 备份、Nginx、Certbot、自动提交或上线脚手架时优先使用；必须先读取项目真实构建、产物、启动和健康检查结构。
 ---
 
 # Aliyun Release Script Generator
@@ -20,6 +20,7 @@ description: 为当前项目生成阿里云 ECS 发布脚本、本机服务器�
 - 生成或更新 `deploy/aliyun/scripts/sync_git_release.sh`
 - 生成或更新 `deploy/aliyun/scripts/init_deploy_config.sh`
 - 生成或更新 `deploy/aliyun/scripts/configure_nginx_site.sh`
+- 生成或更新 `sqlite_backup.sh`、`pull_sqlite_backup.sh`、`install_sqlite_backup_schedule.sh` 和 `remote_release.sh`
 - 首次调用时自动创建本机私有的 `deploy/aliyun/.deploy.local.sh`
 
 这个 skill 不应该跳过 repo 探查。脚本是否可用，完全取决于是否先读清楚当前项目。
@@ -43,6 +44,7 @@ description: 为当前项目生成阿里云 ECS 发布脚本、本机服务器�
 13. 是否已有 `deploy/aliyun/.deploy.local.sh`，以及它是否已经被 Git 忽略
 14. 服务器 IP/Host、SSH 用户、SSH 端口与认证方式是否已有本机记录
 15. 项目域名、Nginx 模板和当前远端 Nginx 管理方式
+16. SQLite 实际路径、迁移入口、后台写入与现有备份/异地恢复方式
 
 优先使用这些命令：
 
@@ -81,6 +83,10 @@ find . -maxdepth 3 -type f -name 'package.json'
 - `deploy/aliyun/scripts/sync_git_release.sh`
 - `deploy/aliyun/scripts/init_deploy_config.sh`
 - `deploy/aliyun/scripts/configure_nginx_site.sh`
+- `deploy/aliyun/scripts/sqlite_backup.sh`
+- `deploy/aliyun/scripts/pull_sqlite_backup.sh`
+- `deploy/aliyun/scripts/install_sqlite_backup_schedule.sh`
+- `deploy/aliyun/scripts/remote_release.sh`
 - `deploy/aliyun/.deploy.local.sh`（首次生成，权限 `600`，禁止提交）
 - `deploy/aliyun/.git-release-approval.local.json`（每次发布前由 Agent 梳理后自动生成，权限 `600`，禁止提交）
 
@@ -112,6 +118,8 @@ find . -maxdepth 3 -type f -name 'package.json'
 - `PO_CERTBOT_WEBROOT`：默认 `/var/www/certbot`
 - `PO_NGINX_SETUP_MODE`：`auto | skip | force`，默认 `auto`
 - 项目的远端根目录、env、systemd、Nginx、静态目录和 release 保留数
+- `PO_REMOTE_DATABASE_FILE`：从项目实际配置识别的 SQLite 绝对路径；不能确认时不得猜测
+- `PO_REMOTE_BACKUP_DIR`、备份/校验/部署/健康检查超时和保留天数
 
 执行约束：
 
@@ -177,6 +185,18 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 部署成功后才真正写回版本文件并执行 git push
 - Nginx/证书初始化失败属于部署失败，不写回版本号、不提交、不打 tag
 - 上传发布包前必须验证与当前 release plan 匹配的 Git 发布审批；缺失、tag 不一致或梳理后工作区变化时立即停止
+- `--health-path` 必须对应真实可请求的后端健康端点；SQLite 项目生成时传入 `--sqlite-db-path`，并核对本机私有配置
+
+### SQLite Release Scope And Backup
+
+- Agent 根据实际 diff、迁移入口和生产数据操作，写入审批参数 `--db-change-scope web|backend|data`；证据不足按 `data`，用户明确指定范围时遵从。审批文件将范围和原有 tag/工作区指纹一起绑定，缺失或非法时发布前停止。
+- `web` 仅切换静态文件、保留旧前端，不重启 API、不做数据库门禁；首次部署没有旧后端时不能选择 `web`。
+- `backend` 在上传前检查 48 小时内的本机已验证备份证明，并与服务器备份清单比对；不为每次发布重新备份。
+- `data` 在切换前用 SQLite `.backup` 创建新副本，限时拉到本机，校验 SHA-256 和 `quick_check` 后继续；生产机不执行 `quick_check`。失败或超时保持旧版本。
+- 仅在远端 `current` 和数据库文件均不存在时按首次空库部署跳过旧库备份；已有服务但数据库文件缺失必须停止。
+- 远端切换和健康检查限时执行；失败时恢复旧代码、静态文件、env 和 service，并核实旧服务。数据库迁移不能自动回滚数据，发布前必须检查前后兼容性或项目提供的恢复方案。
+- 独立 systemd timer 每天生成一致性备份；本机 macOS launchd 每日及登录后补拉、验证。默认服务器保留 7 天、本机 30 天；未获异地验证回执的服务器副本不清理，始终至少保留两份。备份生成和本机验证分别记录，不把文件存在视为可恢复。
+- 已生成的项目脚本不会自动升级；再次调用本 Skill 时须保留该项目的自定义部署逻辑，逐项整合新门禁。
 
 ## Structured Git Auto Approval
 
@@ -216,7 +236,8 @@ find . -maxdepth 3 -type f -name 'package.json'
 node deploy/aliyun/scripts/manage_git_release_commit.mjs approve \
   --message-file /tmp/release-commit-message.txt \
   --paths-file /tmp/release-commit-paths.txt \
-  --git-tag <version-plan.gitTag>
+  --git-tag <version-plan.gitTag> \
+  --db-change-scope <web|backend|data>
 ```
 
 当摘要明确纳入未跟踪文件时增加 `--allow-untracked true`；首次建仓审计通过后增加 `--allow-initial-all true`。

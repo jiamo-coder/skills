@@ -21,6 +21,7 @@ Usage:
     [--admin-build-cmd <cmd>] \
     [--admin-dist-path <path>] \
     [--health-path <path>] \
+    [--sqlite-db-path <absolute-path>] \
     [--runtime-install-cmd <cmd>] \
     [--release-prefix <prefix>] \
     [--deploy-host <host>] \
@@ -50,6 +51,7 @@ WEB_DIST_PATH=""
 ADMIN_BUILD_CMD=""
 ADMIN_DIST_PATH=""
 HEALTH_PATH=""
+SQLITE_DB_PATH=""
 RUNTIME_INSTALL_CMD="npm install --omit=dev --legacy-peer-deps"
 RELEASE_PREFIX=""
 DEPLOY_HOST=""
@@ -75,6 +77,7 @@ while [[ $# -gt 0 ]]; do
     --admin-build-cmd) ADMIN_BUILD_CMD="$2"; shift 2 ;;
     --admin-dist-path) ADMIN_DIST_PATH="$2"; shift 2 ;;
     --health-path) HEALTH_PATH="$2"; shift 2 ;;
+    --sqlite-db-path) SQLITE_DB_PATH="$2"; shift 2 ;;
     --runtime-install-cmd) RUNTIME_INSTALL_CMD="$2"; shift 2 ;;
     --release-prefix) RELEASE_PREFIX="$2"; shift 2 ;;
     --deploy-host) DEPLOY_HOST="$2"; shift 2 ;;
@@ -93,6 +96,14 @@ done
 
 if [[ -z "$OUTPUT_DIR" || -z "$PROJECT_SLUG" || -z "$PROJECT_DOMAIN" || -z "$API_BUILD_CMD" || -z "$API_DIST_PATH" || -z "$START_ENTRY" || -z "$ENV_TEMPLATE" || -z "$SERVICE_TEMPLATE" || -z "$NGINX_TEMPLATE" ]]; then
   usage >&2
+  exit 1
+fi
+if [[ -n "$SQLITE_DB_PATH" && ! "$SQLITE_DB_PATH" =~ ^/[A-Za-z0-9_./-]+$ ]]; then
+  echo 'sqlite db path must be an absolute safe path' >&2
+  exit 1
+fi
+if [[ -z "$HEALTH_PATH" || "$HEALTH_PATH" != /* ]]; then
+  echo 'a real absolute backend health path is required for rollback verification' >&2
   exit 1
 fi
 
@@ -129,6 +140,17 @@ GIT_COMMIT_SCRIPT="$OUTPUT_DIR/manage_git_release_commit.mjs"
 GIT_SYNC_SCRIPT="$OUTPUT_DIR/sync_git_release.sh"
 CONFIG_INIT_SCRIPT="$OUTPUT_DIR/init_deploy_config.sh"
 NGINX_CONFIG_SCRIPT="$OUTPUT_DIR/configure_nginx_site.sh"
+SQLITE_BACKUP_SCRIPT="$OUTPUT_DIR/sqlite_backup.sh"
+SQLITE_PULL_SCRIPT="$OUTPUT_DIR/pull_sqlite_backup.sh"
+SQLITE_SCHEDULE_SCRIPT="$OUTPUT_DIR/install_sqlite_backup_schedule.sh"
+REMOTE_RELEASE_SCRIPT="$OUTPUT_DIR/remote_release.sh"
+TEMPLATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../templates" && pwd)"
+for template in sqlite_backup.sh pull_sqlite_backup.sh install_sqlite_backup_schedule.sh remote_release.sh; do
+  if [[ ! -f "$TEMPLATE_DIR/$template" ]]; then
+    echo "缺少发布模板: $TEMPLATE_DIR/$template" >&2
+    exit 1
+  fi
+done
 
 API_DIST_PARENT="$(dirname "$API_DIST_PATH")"
 ENV_TEMPLATE_Q="$(shell_quote "$ENV_TEMPLATE")"
@@ -138,7 +160,6 @@ NGINX_TEMPLATE_BASENAME="$(basename "$NGINX_TEMPLATE")"
 API_DIST_PATH_Q="$(shell_quote "$API_DIST_PATH")"
 API_DIST_PARENT_Q="$(shell_quote "$API_DIST_PARENT")"
 START_ENTRY_Q="$(shell_quote "$START_ENTRY")"
-RUNTIME_INSTALL_CMD_Q="$(shell_quote "$RUNTIME_INSTALL_CMD")"
 DEPLOY_HOST_Q="$(shell_quote "$DEPLOY_HOST")"
 DEPLOY_USER_Q="$(shell_quote "$DEPLOY_USER")"
 DEPLOY_PORT_Q="$(shell_quote "$DEPLOY_PORT")"
@@ -157,8 +178,6 @@ fi
 
 PACKAGE_STAGE_COPY_BLOCK=""
 REQUIRED_PATHS_BLOCK=$'\n'"  required_paths+=(\"deploy/aliyun/manage_release_version.mjs\")"$'\n'"  required_paths+=(\"deploy/aliyun/manage_git_release_commit.mjs\")"$'\n'"  required_paths+=(\"deploy/aliyun/sync_git_release.sh\")"$'\n'"  required_paths+=(\"deploy/aliyun/configure_nginx_site.sh\")"
-REMOTE_MKDIR_ARGS='"$REMOTE_RELEASES_DIR" "$REMOTE_SHARED_DIR" "$REMOTE_DATA_DIR" "$REMOTE_UPLOADS_DIR" "$REMOTE_LOG_DIR" "$REMOTE_ENV_DIR"'
-REMOTE_SYNC_BLOCK=""
 BOOTSTRAP_DIRS=(
   '  "${PROJECT_DIR}/data"'
   '  "${PROJECT_DIR}/uploads"'
@@ -171,20 +190,18 @@ if [[ -n "$WEB_DIST_PATH" ]]; then
   PACKAGE_STAGE_COPY_BLOCK+=$'\n'"mkdir -p \"\$STAGE_DIR/web\""
   PACKAGE_STAGE_COPY_BLOCK+=$'\n'"cp -R $WEB_DIST_PATH_Q/. \"\$STAGE_DIR/web/\""
   REQUIRED_PATHS_BLOCK+=$'\n'"  required_paths+=(\"web/index.html\")"
-  REMOTE_MKDIR_ARGS+=' "$REMOTE_WEB_DIR"'
-  REMOTE_SYNC_BLOCK+=$'\n'"find \"\$REMOTE_WEB_DIR\" -mindepth 1 -maxdepth 1 -exec rm -rf {} +"
-  REMOTE_SYNC_BLOCK+=$'\n'"cp -R \"\$REMOTE_CURRENT_DIR/web/.\" \"\$REMOTE_WEB_DIR/\""
   BOOTSTRAP_DIRS+=('  "${PROJECT_DIR}/web"')
 fi
+HAS_WEB=0
+HAS_ADMIN=0
+[[ -z "$WEB_DIST_PATH" ]] || HAS_WEB=1
+[[ -z "$ADMIN_DIST_PATH" ]] || HAS_ADMIN=1
 
 if [[ -n "$ADMIN_DIST_PATH" ]]; then
   ADMIN_DIST_PATH_Q="$(shell_quote "$ADMIN_DIST_PATH")"
   PACKAGE_STAGE_COPY_BLOCK+=$'\n'"mkdir -p \"\$STAGE_DIR/admin-web\""
   PACKAGE_STAGE_COPY_BLOCK+=$'\n'"cp -R $ADMIN_DIST_PATH_Q/. \"\$STAGE_DIR/admin-web/\""
   REQUIRED_PATHS_BLOCK+=$'\n'"  required_paths+=(\"admin-web/index.html\")"
-  REMOTE_MKDIR_ARGS+=' "$REMOTE_ADMIN_WEB_DIR"'
-  REMOTE_SYNC_BLOCK+=$'\n'"find \"\$REMOTE_ADMIN_WEB_DIR\" -mindepth 1 -maxdepth 1 -exec rm -rf {} +"
-  REMOTE_SYNC_BLOCK+=$'\n'"cp -R \"\$REMOTE_CURRENT_DIR/admin-web/.\" \"\$REMOTE_ADMIN_WEB_DIR/\""
   BOOTSTRAP_DIRS+=('  "${PROJECT_DIR}/admin-web"')
 fi
 
@@ -197,21 +214,6 @@ for i in "${!BOOTSTRAP_DIRS[@]}"; do
     BOOTSTRAP_MKDIR_BLOCK+="${line}"
   fi
 done
-
-HEALTH_CHECK_BLOCK='echo "未配置 HTTP 健康检查，请确认服务已成功启动。"'
-if [[ -n "$HEALTH_PATH" ]]; then
-  HEALTH_CHECK_BLOCK=$(cat <<EOF
-APP_PORT=\${PORT:?REMOTE_ENV_FILE must define PORT}
-for _ in {1..20}; do
-  if curl -fsS "http://127.0.0.1:\$APP_PORT$HEALTH_PATH" >/dev/null; then
-    break
-  fi
-  sleep 2
-done
-curl -fsS "http://127.0.0.1:\$APP_PORT$HEALTH_PATH"
-EOF
-)
-fi
 
 cat > "$CONFIG_INIT_SCRIPT" <<EOF
 #!/usr/bin/env bash
@@ -384,6 +386,16 @@ trap 'rm -f "\$TEMP_FILE"' EXIT
   printf 'export PO_REMOTE_ADMIN_WEB_DIR="\$PO_REMOTE_ROOT/admin-web"\n'
   shell_export PO_REMOTE_RUN_USER "\$DEPLOY_USER"
   shell_export PO_REMOTE_RELEASE_KEEP_COUNT "2"
+  shell_export PO_REMOTE_DATABASE_FILE "$SQLITE_DB_PATH"
+  printf 'export PO_REMOTE_BACKUP_DIR="\$PO_REMOTE_DATA_DIR/backups"\n'
+  shell_export PO_DB_BACKUP_TIMEOUT_SEC "1800"
+  shell_export PO_DB_BACKUP_TOTAL_TIMEOUT_SEC "3600"
+  shell_export PO_DB_CHECK_TIMEOUT_SEC "3600"
+  shell_export PO_REMOTE_DEPLOY_TIMEOUT_SEC "1800"
+  shell_export PO_HEALTH_TIMEOUT_SEC "60"
+  shell_export PO_BACKUP_MAX_AGE_HOURS "48"
+  shell_export PO_BACKUP_REMOTE_KEEP_DAYS "7"
+  shell_export PO_BACKUP_LOCAL_KEEP_DAYS "30"
 } > "\$TEMP_FILE"
 mv "\$TEMP_FILE" "\$CONFIG_FILE"
 trap - EXIT
@@ -755,6 +767,8 @@ cp "\$DEPLOY_DIR/scripts/manage_release_version.mjs" "\$STAGE_DIR/deploy/aliyun/
 cp "\$DEPLOY_DIR/scripts/manage_git_release_commit.mjs" "\$STAGE_DIR/deploy/aliyun/manage_git_release_commit.mjs"
 cp "\$DEPLOY_DIR/scripts/sync_git_release.sh" "\$STAGE_DIR/deploy/aliyun/sync_git_release.sh"
 cp "\$DEPLOY_DIR/scripts/configure_nginx_site.sh" "\$STAGE_DIR/deploy/aliyun/configure_nginx_site.sh"
+cp "\$DEPLOY_DIR/scripts/sqlite_backup.sh" "\$STAGE_DIR/deploy/aliyun/sqlite_backup.sh"
+cp "\$DEPLOY_DIR/scripts/install_sqlite_backup_schedule.sh" "\$STAGE_DIR/deploy/aliyun/install_sqlite_backup_schedule.sh"
 
 tar -czf "\$ARTIFACT" -C "\$STAGE_DIR" .
 
@@ -855,6 +869,14 @@ NGINX_SETUP_MODE="\${PO_NGINX_SETUP_MODE:-}"
 REMOTE_WEB_DIR="\${PO_REMOTE_WEB_DIR:-\$REMOTE_ROOT/web}"
 REMOTE_ADMIN_WEB_DIR="\${PO_REMOTE_ADMIN_WEB_DIR:-\$REMOTE_ROOT/admin-web}"
 REMOTE_RUN_USER="\${PO_REMOTE_RUN_USER:-\$DEPLOY_USER}"
+REMOTE_DATABASE_FILE="\${PO_REMOTE_DATABASE_FILE:-}"
+REMOTE_BACKUP_DIR="\${PO_REMOTE_BACKUP_DIR:-\$REMOTE_DATA_DIR/backups}"
+DB_BACKUP_TIMEOUT_SEC="\${PO_DB_BACKUP_TIMEOUT_SEC:-1800}"
+DB_BACKUP_TOTAL_TIMEOUT_SEC="\${PO_DB_BACKUP_TOTAL_TIMEOUT_SEC:-3600}"
+DB_CHECK_TIMEOUT_SEC="\${PO_DB_CHECK_TIMEOUT_SEC:-3600}"
+REMOTE_DEPLOY_TIMEOUT_SEC="\${PO_REMOTE_DEPLOY_TIMEOUT_SEC:-1800}"
+HEALTH_TIMEOUT_SEC="\${PO_HEALTH_TIMEOUT_SEC:-60}"
+SSH_COMMAND_TIMEOUT_SEC="\${PO_SSH_COMMAND_TIMEOUT_SEC:-3900}"
 
 if [[ -z "\$NGINX_SETUP_MODE" ]]; then
   case "\$REMOTE_NGINX_CONF" in
@@ -932,14 +954,31 @@ require_cmd scp
 require_cmd sed
 require_cmd tar
 require_cmd node
+require_cmd perl
 require_env DEPLOY_HOST
 require_env DEPLOY_USER
 validate_artifact "\$ARTIFACT"
+for seconds in "\$DB_BACKUP_TIMEOUT_SEC" "\$DB_BACKUP_TOTAL_TIMEOUT_SEC" "\$REMOTE_DEPLOY_TIMEOUT_SEC" "\$HEALTH_TIMEOUT_SEC" "\$SSH_COMMAND_TIMEOUT_SEC"; do
+  if [[ ! "\$seconds" =~ ^[1-9][0-9]*$ ]]; then echo '超时配置必须是正整数秒' >&2; exit 1; fi
+done
+if (( SSH_COMMAND_TIMEOUT_SEC <= DB_BACKUP_TOTAL_TIMEOUT_SEC + 60 || SSH_COMMAND_TIMEOUT_SEC <= REMOTE_DEPLOY_TIMEOUT_SEC + 240 )); then
+  echo 'PO_SSH_COMMAND_TIMEOUT_SEC 必须长于备份超时 60 秒、部署超时 240 秒' >&2
+  exit 1
+fi
 
 RELEASE_GIT_TAG="\$(node -e 'const fs=require("fs"); const plan=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (!plan.gitTag) process.exit(1); process.stdout.write(plan.gitTag);' "\$VERSION_PLAN_FILE")"
 node "\$DEPLOY_DIR/scripts/manage_git_release_commit.mjs" verify \\
   --approval-file "\$GIT_APPROVAL_FILE" \\
   --git-tag "\$RELEASE_GIT_TAG"
+DB_CHANGE_SCOPE="\$(node -e 'const a=require(process.argv[1]); if (!["web","backend","data"].includes(a.dbChangeScope)) process.exit(1); process.stdout.write(a.dbChangeScope)' "\$GIT_APPROVAL_FILE")"
+if [[ "\$DB_CHANGE_SCOPE" != web && -z "\$REMOTE_DATABASE_FILE" ]]; then
+  echo '后端/数据发布必须在本机私有配置中设置 PO_REMOTE_DATABASE_FILE' >&2
+  exit 1
+fi
+if [[ -n "\$REMOTE_DATABASE_FILE" && ! "\$REMOTE_DATABASE_FILE" =~ ^/[A-Za-z0-9_./-]+$ ]]; then
+  echo 'PO_REMOTE_DATABASE_FILE 必须是安全的绝对路径' >&2
+  exit 1
+fi
 
 run_scp() {
   local source_path="\$1"
@@ -951,10 +990,11 @@ run_scp() {
     DEPLOY_USER="\$DEPLOY_USER" \\
     DEPLOY_PORT="\$DEPLOY_PORT" \\
     SSH_PASSWORD="\$SSH_PASSWORD" \\
+    DEPLOY_TIMEOUT="\$SSH_COMMAND_TIMEOUT_SEC" \\
     SOURCE_PATH="\$source_path" \\
     REMOTE_PATH="\$remote_path" \\
     expect <<'EXPECT_EOF'
-set timeout -1
+set timeout \$env(DEPLOY_TIMEOUT)
 set password \$env(SSH_PASSWORD)
 set host \$env(DEPLOY_HOST)
 set user \$env(DEPLOY_USER)
@@ -967,16 +1007,17 @@ expect {
   -re {.*[Pp]assword:.*} { send "\$password\r"; exp_continue }
   -re {.*\[sudo\].*[Pp]assword.*} { send "\$password\r"; exp_continue }
   eof
+  timeout { exit 124 }
 }
 catch wait result
 exit [lindex \$result 3]
 EXPECT_EOF
   else
-    local scp_args=(-P "\$DEPLOY_PORT" -o StrictHostKeyChecking=accept-new)
+    local scp_args=(-P "\$DEPLOY_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
     if [[ "\$SSH_AUTH_METHOD" == "key" ]]; then
       scp_args+=(-o IdentitiesOnly=yes -i "\$SSH_KEY_FILE")
     fi
-    scp "\${scp_args[@]}" "\$source_path" "\$DEPLOY_USER@\$DEPLOY_HOST:\$remote_path"
+    perl -e 'alarm shift @ARGV; exec @ARGV or die \$!' "\$SSH_COMMAND_TIMEOUT_SEC" scp "\${scp_args[@]}" "\$source_path" "\$DEPLOY_USER@\$DEPLOY_HOST:\$remote_path"
   fi
 }
 
@@ -989,9 +1030,10 @@ run_ssh() {
     DEPLOY_USER="\$DEPLOY_USER" \\
     DEPLOY_PORT="\$DEPLOY_PORT" \\
     SSH_PASSWORD="\$SSH_PASSWORD" \\
+    DEPLOY_TIMEOUT="\$SSH_COMMAND_TIMEOUT_SEC" \\
     REMOTE_COMMAND="\$remote_command" \\
     expect <<'EXPECT_EOF'
-set timeout -1
+set timeout \$env(DEPLOY_TIMEOUT)
 set password \$env(SSH_PASSWORD)
 set host \$env(DEPLOY_HOST)
 set user \$env(DEPLOY_USER)
@@ -1003,18 +1045,37 @@ expect {
   -re {.*[Pp]assword:.*} { send "\$password\r"; exp_continue }
   -re {.*\[sudo\].*[Pp]assword.*} { send "\$password\r"; exp_continue }
   eof
+  timeout { exit 124 }
 }
+
 catch wait result
 exit [lindex \$result 3]
 EXPECT_EOF
   else
-    local ssh_args=(-p "\$DEPLOY_PORT" -o StrictHostKeyChecking=accept-new)
+    local ssh_args=(-p "\$DEPLOY_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
     if [[ "\$SSH_AUTH_METHOD" == "key" ]]; then
       ssh_args+=(-o IdentitiesOnly=yes -i "\$SSH_KEY_FILE")
     fi
-    ssh "\${ssh_args[@]}" "\$DEPLOY_USER@\$DEPLOY_HOST" "\$remote_command"
+    perl -e 'alarm shift @ARGV; exec @ARGV or die \$!' "\$SSH_COMMAND_TIMEOUT_SEC" ssh "\${ssh_args[@]}" "\$DEPLOY_USER@\$DEPLOY_HOST" "\$remote_command"
   fi
 }
+
+DB_BOOTSTRAP=0
+if [[ "\$DB_CHANGE_SCOPE" != web ]]; then
+  DB_REMOTE_STATE="\$(run_ssh "if test -f '\$REMOTE_DATABASE_FILE'; then echo __PO_DB_STATE_existing__; elif test -e '\$REMOTE_CURRENT_DIR' || test -L '\$REMOTE_CURRENT_DIR'; then echo __PO_DB_STATE_missing__; else echo __PO_DB_STATE_initial__; fi" | tr -d '\\r' | grep -E '^__PO_DB_STATE_(existing|missing|initial)__$' | tail -n 1)" || exit 1
+  case "\$DB_REMOTE_STATE" in
+    __PO_DB_STATE_existing__) ;;
+    __PO_DB_STATE_missing__) echo '已有服务但 SQLite 文件缺失，停止发布' >&2; exit 1 ;;
+    __PO_DB_STATE_initial__) DB_BOOTSTRAP=1; echo '首次空库部署：服务器上尚无 current 和 SQLite 文件' ;;
+    *) echo '无法确认服务器数据库状态，停止发布' >&2; exit 1 ;;
+  esac
+  if [[ "\$(uname -s)" == Darwin ]]; then
+    bash "\$DEPLOY_DIR/scripts/install_sqlite_backup_schedule.sh" local
+  fi
+fi
+if [[ "\$DB_CHANGE_SCOPE" == backend && "\$DB_BOOTSTRAP" == 0 ]]; then
+  bash "\$DEPLOY_DIR/scripts/pull_sqlite_backup.sh" verify-recent
+fi
 
 TMP_DIR="\$(mktemp -d)"
 cleanup() {
@@ -1049,11 +1110,17 @@ REMOTE_UPLOAD_ENV_FILE="/tmp/\$ENV_BASENAME"
 REMOTE_SERVICE_FILE="/tmp/\$REMOTE_SERVICE_NAME"
 RELEASE_NAME="\$(basename "\$ARTIFACT" .tgz)"
 REMOTE_RELEASE_DIR="\$REMOTE_RELEASES_DIR/\$RELEASE_NAME"
+REMOTE_RELEASE_SCRIPT="/tmp/\$RELEASE_NAME-remote-release.sh"
+REMOTE_BACKUP_SCRIPT="/tmp/\$RELEASE_NAME-sqlite-backup.sh"
 
 echo "[$PROJECT_SLUG] 上传发布包..."
 run_scp "\$ARTIFACT" "\$REMOTE_ARTIFACT"
 run_scp "\$TMP_DIR/\$ENV_BASENAME" "\$REMOTE_UPLOAD_ENV_FILE"
 run_scp "\$LOCAL_SERVICE_FILE" "\$REMOTE_SERVICE_FILE"
+run_scp "\$DEPLOY_DIR/scripts/remote_release.sh" "\$REMOTE_RELEASE_SCRIPT"
+if [[ "\$DB_CHANGE_SCOPE" == data ]]; then
+  run_scp "\$DEPLOY_DIR/scripts/sqlite_backup.sh" "\$REMOTE_BACKUP_SCRIPT"
+fi
 
 REMOTE_ENV_PREFIX=""
 append_remote_env() {
@@ -1089,50 +1156,30 @@ append_remote_env REMOTE_NGINX_INCLUDE_CONF "\$REMOTE_NGINX_INCLUDE_CONF"
 append_remote_env REMOTE_NGINX_CONF "\$REMOTE_NGINX_CONF"
 append_remote_env CERTBOT_WEBROOT "\$CERTBOT_WEBROOT"
 append_remote_env NGINX_SETUP_MODE "\$NGINX_SETUP_MODE"
+append_remote_env DB_CHANGE_SCOPE "\$DB_CHANGE_SCOPE"
+append_remote_env REMOTE_DATABASE_FILE "\$REMOTE_DATABASE_FILE"
+append_remote_env REMOTE_BACKUP_DIR "\$REMOTE_BACKUP_DIR"
+append_remote_env PO_REMOTE_ROOT "\$REMOTE_ROOT"
+append_remote_env PO_REMOTE_DATABASE_FILE "\$REMOTE_DATABASE_FILE"
+append_remote_env PO_REMOTE_BACKUP_DIR "\$REMOTE_BACKUP_DIR"
+append_remote_env PO_DB_BACKUP_TIMEOUT_SEC "\$DB_BACKUP_TIMEOUT_SEC"
+append_remote_env PO_DB_BACKUP_TOTAL_TIMEOUT_SEC "\$DB_BACKUP_TOTAL_TIMEOUT_SEC"
+append_remote_env REMOTE_DEPLOY_TIMEOUT_SEC "\$REMOTE_DEPLOY_TIMEOUT_SEC"
+append_remote_env HEALTH_TIMEOUT_SEC "\$HEALTH_TIMEOUT_SEC"
+append_remote_env APP_PORT "\$APP_PORT"
+append_remote_env HEALTH_PATH "$HEALTH_PATH"
+append_remote_env RUNTIME_INSTALL_CMD "$RUNTIME_INSTALL_CMD"
+append_remote_env NGINX_TEMPLATE_BASENAME "$NGINX_TEMPLATE_BASENAME"
+append_remote_env HAS_WEB "$HAS_WEB"
+append_remote_env HAS_ADMIN "$HAS_ADMIN"
+append_remote_env PO_REMOTE_RUN_USER "\$REMOTE_RUN_USER"
 
-REMOTE_CMD="\$REMOTE_ENV_PREFIX\$(cat <<'REMOTE_EOF'
-bash -lc '
-set -euo pipefail
-KEEP_COUNT="\$REMOTE_RELEASE_KEEP_COUNT"
-if ! [[ "\$KEEP_COUNT" =~ ^[0-9]+$ ]] || [[ "\$KEEP_COUNT" -lt 1 ]]; then
-  KEEP_COUNT=2
+if [[ "\$DB_CHANGE_SCOPE" == data && "\$DB_BOOTSTRAP" == 0 ]]; then
+  run_ssh "\${REMOTE_ENV_PREFIX}timeout --signal=TERM --kill-after=30s \$DB_BACKUP_TOTAL_TIMEOUT_SEC bash \$REMOTE_BACKUP_SCRIPT create"
+  bash "\$DEPLOY_DIR/scripts/pull_sqlite_backup.sh" pull-latest
 fi
-sudo mkdir -p $REMOTE_MKDIR_ARGS
-sudo chown -R "\$REMOTE_RUN_USER":"\$REMOTE_RUN_USER" "\$REMOTE_ROOT"
-rm -rf "\$REMOTE_RELEASE_DIR"
-mkdir -p "\$REMOTE_RELEASE_DIR"
-tar -xzf "\$REMOTE_ARTIFACT" -C "\$REMOTE_RELEASE_DIR"
-cd "\$REMOTE_RELEASE_DIR"
-$RUNTIME_INSTALL_CMD
-rm -rf "\$REMOTE_CURRENT_DIR"
-ln -sfn "\$REMOTE_RELEASE_DIR" "\$REMOTE_CURRENT_DIR"$REMOTE_SYNC_BLOCK
-sudo install -o "\$REMOTE_RUN_USER" -g "\$REMOTE_RUN_USER" -m 600 "\$REMOTE_UPLOAD_ENV_FILE" "\$REMOTE_ENV_FILE"
-sudo install -m 644 "\$REMOTE_SERVICE_FILE" "/etc/systemd/system/\$REMOTE_SERVICE_NAME"
-sudo systemctl daemon-reload
-sudo systemctl enable "\$REMOTE_SERVICE_NAME" >/dev/null
-sudo systemctl restart "\$REMOTE_SERVICE_NAME"
-set -a
-source "\$REMOTE_ENV_FILE"
-set +a
-$HEALTH_CHECK_BLOCK
-sudo env \
-  PO_PROJECT_NAME="\$PROJECT_NAME" \
-  PO_PROJECT_DOMAIN="\$PROJECT_DOMAIN" \
-  PO_NGINX_SETUP_MODE="\$NGINX_SETUP_MODE" \
-  PO_REMOTE_NGINX_SITES_DIR="\$REMOTE_NGINX_SITES_DIR" \
-  PO_REMOTE_NGINX_INCLUDE_CONF="\$REMOTE_NGINX_INCLUDE_CONF" \
-  PO_REMOTE_NGINX_CONF="\$REMOTE_NGINX_CONF" \
-  PO_CERTBOT_WEBROOT="\$CERTBOT_WEBROOT" \
-  PO_NGINX_FINAL_TEMPLATE="\$REMOTE_CURRENT_DIR/deploy/aliyun/$NGINX_TEMPLATE_BASENAME" \
-  bash "\$REMOTE_CURRENT_DIR/deploy/aliyun/configure_nginx_site.sh"
-mapfile -t OLD_RELEASES < <(find "\$REMOTE_RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d -print | xargs -r ls -1dt | tail -n +\$((KEEP_COUNT + 1)))
-if [[ "\${#OLD_RELEASES[@]}" -gt 0 ]]; then
-  printf "清理旧版本 release: %s\n" "\${OLD_RELEASES[@]}"
-  sudo rm -rf "\${OLD_RELEASES[@]}"
-fi
-'
-REMOTE_EOF
-)"
+
+REMOTE_CMD="\${REMOTE_ENV_PREFIX}timeout --signal=TERM --kill-after=180s \$REMOTE_DEPLOY_TIMEOUT_SEC bash \$REMOTE_RELEASE_SCRIPT"
 
 run_ssh "\$REMOTE_CMD"
 
@@ -1392,7 +1439,7 @@ function fail(message) {
 
 function usage() {
   console.log(`Usage:
-  manage_git_release_commit.mjs approve --message-file <file> --paths-file <file> --git-tag <tag>
+  manage_git_release_commit.mjs approve --message-file <file> --paths-file <file> --git-tag <tag> --db-change-scope <web|backend|data>
     [--approval-file <file>] [--allow-untracked true] [--allow-initial-all true]
   manage_git_release_commit.mjs verify --approval-file <file> --git-tag <tag>
   manage_git_release_commit.mjs materialize --approval-file <file> --git-tag <tag>
@@ -1534,9 +1581,10 @@ function readApproval(filePath, gitTag) {
     fail(`缺少 Git 发布审批信息: ${filePath}。请先通过 Codex Skill 梳理提交内容并自动生成审批文件。`);
   }
   const approval = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  if (approval.schemaVersion !== 1 || approval.confirmed !== true) fail('Git 发布审批文件无效。');
+  if (approval.schemaVersion !== 2 || approval.confirmed !== true) fail('Git 发布审批文件无效，请重新生成并写入数据库改动范围。');
   if (approval.gitTag !== gitTag) fail('Git 发布审批对应的 tag 与当前 release plan 不一致，请重新梳理并生成。');
   validateMessage(approval.message);
+  if (!['web', 'backend', 'data'].includes(approval.dbChangeScope)) fail('Git 发布审批缺少合法的数据库改动范围。');
   if (!Array.isArray(approval.approvedPaths)) fail('Git 发布确认文件缺少提交路径。');
   return approval;
 }
@@ -1557,6 +1605,7 @@ const approvalFile = path.resolve(args['approval-file'] || defaultApprovalFile);
 
 if (command === 'approve') {
   if (!args['message-file'] || !args['paths-file'] || !args['git-tag']) fail('approve 缺少 message-file、paths-file 或 git-tag。');
+  if (!['web', 'backend', 'data'].includes(args['db-change-scope'])) fail('approve 必须指定 --db-change-scope web|backend|data。');
   ensureGitRepo();
   const message = validateMessage(fs.readFileSync(path.resolve(args['message-file']), 'utf8'));
   const approvedPaths = readPaths(path.resolve(args['paths-file']));
@@ -1585,9 +1634,10 @@ if (command === 'approve') {
 
   const fingerprint = workspaceFingerprint();
   writePrivate(approvalFile, `${JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     confirmed: true,
     gitTag: args['git-tag'],
+    dbChangeScope: args['db-change-scope'],
     message,
     approvedPaths,
     workspaceFingerprint: fingerprint.hash,
@@ -1801,9 +1851,23 @@ touch \\
 echo "Server directories prepared under \${PROJECT_DIR}"
 EOF
 
-chmod +x "$PACKAGE_SCRIPT" "$DEPLOY_SCRIPT" "$START_SCRIPT" "$BOOTSTRAP_SCRIPT" "$VERSION_SCRIPT" "$GIT_COMMIT_SCRIPT" "$GIT_SYNC_SCRIPT" "$CONFIG_INIT_SCRIPT" "$NGINX_CONFIG_SCRIPT"
+cp "$TEMPLATE_DIR/sqlite_backup.sh" "$SQLITE_BACKUP_SCRIPT"
+cp "$TEMPLATE_DIR/pull_sqlite_backup.sh" "$SQLITE_PULL_SCRIPT"
+cp "$TEMPLATE_DIR/install_sqlite_backup_schedule.sh" "$SQLITE_SCHEDULE_SCRIPT"
+cp "$TEMPLATE_DIR/remote_release.sh" "$REMOTE_RELEASE_SCRIPT"
+chmod +x "$PACKAGE_SCRIPT" "$DEPLOY_SCRIPT" "$START_SCRIPT" "$BOOTSTRAP_SCRIPT" "$VERSION_SCRIPT" "$GIT_COMMIT_SCRIPT" "$GIT_SYNC_SCRIPT" "$CONFIG_INIT_SCRIPT" "$NGINX_CONFIG_SCRIPT" "$SQLITE_BACKUP_SCRIPT" "$SQLITE_PULL_SCRIPT" "$SQLITE_SCHEDULE_SCRIPT" "$REMOTE_RELEASE_SCRIPT"
 
 "$CONFIG_INIT_SCRIPT" --non-interactive
+if [[ -n "$SQLITE_DB_PATH" ]]; then
+  DEPLOY_CONFIG="${PO_DEPLOY_ENV_FILE:-$(cd "$OUTPUT_DIR/.." && pwd)/.deploy.local.sh}"
+  CURRENT_DB_PATH="$(bash -c 'source "$1"; printf "%s" "${PO_REMOTE_DATABASE_FILE:-}"' _ "$DEPLOY_CONFIG")"
+  if [[ -z "$CURRENT_DB_PATH" ]]; then
+    printf 'export PO_REMOTE_DATABASE_FILE=%q\n' "$SQLITE_DB_PATH" >> "$DEPLOY_CONFIG"
+    chmod 600 "$DEPLOY_CONFIG"
+  elif [[ "$CURRENT_DB_PATH" != "$SQLITE_DB_PATH" ]]; then
+    echo 'SQLite path differs from existing private config; inspect PO_REMOTE_DATABASE_FILE before release' >&2
+  fi
+fi
 
 echo "Generated:"
 echo "  $PACKAGE_SCRIPT"
@@ -1815,3 +1879,7 @@ echo "  $START_SCRIPT"
 echo "  $BOOTSTRAP_SCRIPT"
 echo "  $CONFIG_INIT_SCRIPT"
 echo "  $NGINX_CONFIG_SCRIPT"
+echo "  $SQLITE_BACKUP_SCRIPT"
+echo "  $SQLITE_PULL_SCRIPT"
+echo "  $SQLITE_SCHEDULE_SCRIPT"
+echo "  $REMOTE_RELEASE_SCRIPT"

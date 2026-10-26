@@ -41,6 +41,7 @@ printf 'baseline\n' > "$PROJECT/app.txt"
     --api-build-cmd true \
     --api-dist-path dist/api \
     --start-entry dist/api/server.js \
+    --health-path /health \
     --env-template "$PROJECT/api.env" \
     --service-template "$PROJECT/app.service" \
     --nginx-template "$PROJECT/app.conf" \
@@ -93,20 +94,30 @@ expect_failure env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY node "$APPROVAL_TOOL" v
 INVALID_MESSAGE="$TEST_ROOT/invalid-message.txt"
 sed 's/验证方式：.*/验证方式：计划稍后测试。/' "$MESSAGE_FILE" > "$INVALID_MESSAGE"
 expect_failure node "$APPROVAL_TOOL" approve \
-  --message-file "$INVALID_MESSAGE" --paths-file "$PATHS_FILE" --git-tag "$TAG"
+  --message-file "$INVALID_MESSAGE" --paths-file "$PATHS_FILE" --git-tag "$TAG" --db-change-scope web
 
 EMPTY_CORE_MESSAGE="$TEST_ROOT/empty-core-message.txt"
 sed -e 's/^问题\/需求：.*/问题\/需求：无/' -e 's/^实现结果：.*/实现结果：无/' "$MESSAGE_FILE" > "$EMPTY_CORE_MESSAGE"
 expect_failure node "$APPROVAL_TOOL" approve \
-  --message-file "$EMPTY_CORE_MESSAGE" --paths-file "$PATHS_FILE" --git-tag "$TAG"
+  --message-file "$EMPTY_CORE_MESSAGE" --paths-file "$PATHS_FILE" --git-tag "$TAG" --db-change-scope web
 
 printf 'app.txt\nnote.txt\n' > "$TEST_ROOT/paths-with-untracked.txt"
 expect_failure node "$APPROVAL_TOOL" approve \
-  --message-file "$MESSAGE_FILE" --paths-file "$TEST_ROOT/paths-with-untracked.txt" --git-tag "$TAG"
+  --message-file "$MESSAGE_FILE" --paths-file "$PATHS_FILE" --git-tag "$TAG"
+expect_failure node "$APPROVAL_TOOL" approve \
+  --message-file "$MESSAGE_FILE" --paths-file "$PATHS_FILE" --git-tag "$TAG" --db-change-scope unknown
+expect_failure node "$APPROVAL_TOOL" approve \
+  --message-file "$MESSAGE_FILE" --paths-file "$TEST_ROOT/paths-with-untracked.txt" --git-tag "$TAG" --db-change-scope web
 
 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY node "$APPROVAL_TOOL" approve \
-  --message-file "$MESSAGE_FILE" --paths-file "$PATHS_FILE" --git-tag "$TAG" >/dev/null
+  --message-file "$MESSAGE_FILE" --paths-file "$PATHS_FILE" --git-tag "$TAG" --db-change-scope web >/dev/null
 [[ "$(stat -f '%Lp' "$APPROVAL_FILE" 2>/dev/null || stat -c '%a' "$APPROVAL_FILE")" == "600" ]]
+node -e 'const a=require(process.argv[1]); if (a.dbChangeScope !== "web" || a.schemaVersion !== 2) process.exit(1)' "$APPROVAL_FILE"
+for scope in backend data web; do
+  node "$APPROVAL_TOOL" approve --message-file "$MESSAGE_FILE" --paths-file "$PATHS_FILE" --git-tag "$TAG" --db-change-scope "$scope" >/dev/null
+  node -e 'if (require(process.argv[1]).dbChangeScope !== process.argv[2]) process.exit(1)' "$APPROVAL_FILE" "$scope"
+  node "$APPROVAL_TOOL" verify --approval-file "$APPROVAL_FILE" --git-tag "$TAG" >/dev/null
+done
 node "$APPROVAL_TOOL" verify --approval-file "$APPROVAL_FILE" --git-tag "$TAG" >/dev/null
 expect_failure node "$APPROVAL_TOOL" verify --approval-file "$APPROVAL_FILE" --git-tag "v9.9.9-build.9"
 
@@ -160,11 +171,12 @@ cp "$MESSAGE_FILE" "$TEST_ROOT/initial-message.txt"
 expect_failure node "$INITIAL_TOOL_DIR/manage_git_release_commit.mjs" approve \
   --message-file "$TEST_ROOT/initial-message.txt" \
   --paths-file "$TEST_ROOT/initial-paths.txt" \
-  --git-tag "$TAG"
+  --git-tag "$TAG" --db-change-scope web
 node "$INITIAL_TOOL_DIR/manage_git_release_commit.mjs" approve \
   --message-file "$TEST_ROOT/initial-message.txt" \
   --paths-file "$TEST_ROOT/initial-paths.txt" \
   --git-tag "$TAG" \
+  --db-change-scope web \
   --allow-initial-all true >/dev/null
 git -C "$INITIAL" rev-parse --is-inside-work-tree >/dev/null
 node "$INITIAL_TOOL_DIR/manage_git_release_commit.mjs" verify \
@@ -191,6 +203,8 @@ printf 'server { listen 80; server_name multi.example.com; }\n' > "$MULTI/app.co
     --api-build-cmd true \
     --api-dist-path dist/api \
     --start-entry dist/api/server.js \
+    --health-path /health \
+    --sqlite-db-path /service/multi-app/data/app.sqlite \
     --env-template "$MULTI/api.env" \
     --service-template "$MULTI/app.service" \
     --nginx-template "$MULTI/app.conf" \
@@ -204,9 +218,48 @@ printf 'server { listen 80; server_name multi.example.com; }\n' > "$MULTI/app.co
 bash -n "$MULTI_SCRIPTS/"*.sh
 node --check "$MULTI_SCRIPTS/manage_release_version.mjs"
 node --check "$MULTI_SCRIPTS/manage_git_release_commit.mjs"
+grep -Fq 'PO_REMOTE_DATABASE_FILE=/service/multi-app/data/app.sqlite' "$MULTI/deploy/aliyun/.deploy.local.sh"
 MULTI_ARCHIVE="$MULTI/deploy/aliyun/release/multi-app-smoke.tgz"
 tar -tzf "$MULTI_ARCHIVE" | grep -Fq './deploy/aliyun/manage_git_release_commit.mjs'
 tar -tzf "$MULTI_ARCHIVE" | grep -Fq './web/index.html'
 tar -tzf "$MULTI_ARCHIVE" | grep -Fq './admin-web/index.html'
+
+printf 'failure scenario\n' > "$PROJECT/app.txt"
+PO_RELEASE_TYPE_ZH=修复优化 bash "$OUTPUT_DIR/package_release.sh" failed-release >/dev/null
+printf 'app.txt\n' > "$PATHS_FILE"
+node "$APPROVAL_TOOL" approve --message-file "$MESSAGE_FILE" --paths-file "$PATHS_FILE" --git-tag v1.0.2-build.2 --db-change-scope web >/dev/null
+mkdir -p "$TEST_ROOT/failing-bin"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$TEST_ROOT/failing-bin/scp"
+chmod +x "$TEST_ROOT/failing-bin/scp"
+cat > "$TEST_ROOT/failing-deploy.local.sh" <<'EOF'
+export PO_DEPLOY_HOST=example.invalid
+export PO_DEPLOY_USER=tester
+export PO_SSH_AUTH_METHOD=agent
+export PO_PROJECT_DOMAIN=smoke.example.com
+export PO_APP_PORT=8123
+export PO_NGINX_SETUP_MODE=skip
+EOF
+if env PATH="$TEST_ROOT/failing-bin:$PATH" PO_DEPLOY_ENV_FILE="$TEST_ROOT/failing-deploy.local.sh" \
+  bash "$DEPLOY_TOOL" failed-release > "$TEST_ROOT/failed-deploy.log" 2>&1; then
+  echo 'Expected deployment upload to fail' >&2
+  exit 1
+fi
+grep -Fq '上传发布包' "$TEST_ROOT/failed-deploy.log"
+node -e 'if (require(process.argv[1]).version !== "1.0.1") process.exit(1)' "$PROJECT/package.json"
+expect_failure git -C "$PROJECT" rev-parse --verify refs/tags/v1.0.2-build.2
+
+node "$APPROVAL_TOOL" approve --message-file "$MESSAGE_FILE" --paths-file "$PATHS_FILE" --git-tag v1.0.2-build.2 --db-change-scope backend >/dev/null
+printf 'export PO_REMOTE_DATABASE_FILE=/service/smoke-app/data/app.sqlite\n' >> "$TEST_ROOT/failing-deploy.local.sh"
+printf '#!/usr/bin/env bash\necho __PO_DB_STATE_initial__\n' > "$TEST_ROOT/failing-bin/ssh"
+printf '#!/usr/bin/env bash\necho Linux\n' > "$TEST_ROOT/failing-bin/uname"
+chmod +x "$TEST_ROOT/failing-bin/ssh" "$TEST_ROOT/failing-bin/uname"
+if env PATH="$TEST_ROOT/failing-bin:$PATH" PO_DEPLOY_ENV_FILE="$TEST_ROOT/failing-deploy.local.sh" \
+  bash "$DEPLOY_TOOL" failed-release > "$TEST_ROOT/initial-db-deploy.log" 2>&1; then exit 1; fi
+grep -Fq '首次空库部署' "$TEST_ROOT/initial-db-deploy.log"
+grep -Fq '上传发布包' "$TEST_ROOT/initial-db-deploy.log"
+printf '#!/usr/bin/env bash\necho __PO_DB_STATE_missing__\n' > "$TEST_ROOT/failing-bin/ssh"
+if env PATH="$TEST_ROOT/failing-bin:$PATH" PO_DEPLOY_ENV_FILE="$TEST_ROOT/failing-deploy.local.sh" \
+  bash "$DEPLOY_TOOL" failed-release > "$TEST_ROOT/missing-db-deploy.log" 2>&1; then exit 1; fi
+grep -Fq 'SQLite 文件缺失' "$TEST_ROOT/missing-db-deploy.log"
 
 echo "git release confirmation workflow passed"

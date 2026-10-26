@@ -47,6 +47,7 @@ bash "$SKILL_DIR/scripts/render_release_scripts.sh" \
   --api-build-cmd "npm run build:api" \
   --api-dist-path "dist/api" \
   --start-entry "dist/api/server.js" \
+  --health-path "/health" \
   --env-template "$PROJECT_ROOT/api.env.example" \
   --service-template "$PROJECT_ROOT/app.service" \
   --nginx-template "$PROJECT_ROOT/app.conf" \
