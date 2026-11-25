@@ -1,6 +1,6 @@
 ---
 name: aliyun-release-script-generator
-description: 为当前项目生成阿里云 ECS 发布脚本、本机连接配置、独立 Nginx/Certbot 初始化、SQLite 分级备份与超时回退、版本管理及结构化 Git 自动审批。用户提到阿里云、ECS、发布脚本、SQLite 备份、Nginx、Certbot、自动提交或上线脚手架时优先使用；必须先读取项目真实构建、产物、启动和健康检查结构。
+description: 为当前项目生成阿里云 ECS 发布脚本、按环境固定的 SSH 密钥与主机身份预检、独立 Nginx/Certbot 初始化、SQLite 分级备份与回退、版本管理及结构化 Git 审批。用于阿里云、ECS、发布脚本、APK 文件发布、SQLite 备份或上线脚手架；先读取项目真实构建、产物、启动和健康检查结构。
 ---
 
 # Aliyun Release Script Generator
@@ -21,6 +21,7 @@ description: 为当前项目生成阿里云 ECS 发布脚本、本机连接配�
 - 生成或更新 `deploy/aliyun/scripts/init_deploy_config.sh`
 - 生成或更新 `deploy/aliyun/scripts/configure_nginx_site.sh`
 - 生成或更新 `sqlite_backup.sh`、`pull_sqlite_backup.sh`、`install_sqlite_backup_schedule.sh` 和 `remote_release.sh`
+- 生成或更新 `ssh_transport.sh` 和 `deploy_static_files.sh`；新发布默认密钥登录并固定主机身份
 - 首次调用时自动创建本机私有的 `deploy/aliyun/.deploy.local.sh`
 
 这个 skill 不应该跳过 repo 探查。脚本是否可用，完全取决于是否先读清楚当前项目。
@@ -45,6 +46,8 @@ description: 为当前项目生成阿里云 ECS 发布脚本、本机连接配�
 14. 服务器 IP/Host、SSH 用户、SSH 端口与认证方式是否已有本机记录
 15. 项目域名、Nginx 模板和当前远端 Nginx 管理方式
 16. SQLite 实际路径、迁移入口、后台写入与现有备份/异地恢复方式
+17. 目标是生产还是预览，授权账号、可信主机指纹、私钥或选定 agent 公钥、管理员维护的发布入口及允许操作范围
+18. 是否仅发布 APK 和清单；若是，识别精确文件名、目标目录、下载入口及回退方式
 
 优先使用这些命令：
 
@@ -87,6 +90,8 @@ find . -maxdepth 3 -type f -name 'package.json'
 - `deploy/aliyun/scripts/pull_sqlite_backup.sh`
 - `deploy/aliyun/scripts/install_sqlite_backup_schedule.sh`
 - `deploy/aliyun/scripts/remote_release.sh`
+- `deploy/aliyun/scripts/ssh_transport.sh`
+- `deploy/aliyun/scripts/deploy_static_files.sh`
 - `deploy/aliyun/.deploy.local.sh`（首次生成，权限 `600`，禁止提交）
 - `deploy/aliyun/.git-release-approval.local.json`（每次发布前由 Agent 梳理后自动生成，权限 `600`，禁止提交）
 
@@ -111,6 +116,10 @@ find . -maxdepth 3 -type f -name 'package.json'
 - `PO_SSH_AUTH_METHOD`：`password | key | agent`
 - `PO_SSH_PASSWORD`：仅密码认证使用
 - `PO_SSH_KEY_FILE`：仅私钥认证使用
+- `PO_DEPLOY_ENV`：当前目标环境，例如 `production`、`preview`
+- `PO_SSH_AGENT_PUBLIC_KEY_FILE`：agent 模式明确选定的公钥文件
+- `PO_SSH_HOST_PUBLIC_KEY`、`PO_SSH_HOST_FINGERPRINT`：经可信渠道核实的主机身份，不自动采信首次连接
+- `PO_REMOTE_RELEASE_ENTRY`：管理员维护且发布账号不可改的固定发布入口
 - `PO_PROJECT_DOMAIN`：项目公网域名
 - `PO_APP_PORT`：后端服务监听端口
 - `PO_REMOTE_NGINX_SITES_DIR`：默认 `/etc/nginx/projects.d`
@@ -129,6 +138,8 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 创建后执行 `chmod 600 deploy/aliyun/.deploy.local.sh`。
 - 自动把 `/deploy/aliyun/.deploy.local.sh` 加入项目根 `.gitignore`，并确认未被 Git 跟踪。
 - 生成器必须接收或从 env 模板提取 `--app-port`，并可接收 `--deploy-host`、`--deploy-user`、`--deploy-port`、`--ssh-auth-method`、`--ssh-key-file`；无服务器连接值时也要落下完整字段，发布前再补齐。
+- 生产、预览各使用独立的本机私有目标文件，由 `PO_DEPLOY_ENV_FILE` 显式选择；不要把一个环境的主机/账号/密钥引用覆盖成另一个。密钥与主机身份、管理员入口的契约见 [项目化 SSH 发布目标](references/secure-release-targets.md)，脱敏示例见 [deploy-target.example.sh](references/deploy-target.example.sh)。
+- 旧环境口令认证只有同时明确设置 `PO_SSH_AUTH_METHOD=password` 与 `PO_LEGACY_PASSWORD_AUTH=1` 才允许；新环境的密钥失败绝不回退口令。
 
 ## Generation Rules
 
@@ -158,7 +169,7 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 读取 `.deploy.local.sh`
 - 校验发布包内容
 - 上传发布包和配置文件
-- 在远端切换 release
+- 在上传前验证目标授权、主机身份、密钥登录和管理员维护的发布入口，再由固定入口切换 release
 - 清理更老的远端 release
 - 在本地成功写回发布版本
 - 自动同步到 GitHub 仓
@@ -176,6 +187,7 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 远端 release 默认保留几个版本
 - GitHub 远端仓默认如何创建
 - SSH 认证方式是密码、私钥还是 agent；旧项目只有 `PO_SSH_PASSWORD` 时保持兼容
+- 仅显式标记的旧口令目标保持兼容；禁止仅凭旧密码变量自动降级
 
 默认行为：
 
@@ -185,6 +197,9 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 部署成功后才真正写回版本文件并执行 git push
 - Nginx/证书初始化失败属于部署失败，不写回版本号、不提交、不打 tag
 - 上传发布包前必须验证与当前 release plan 匹配的 Git 发布审批；缺失、tag 不一致或梳理后工作区变化时立即停止
+- 发布审批还必须绑定环境、主机、账号、端口、项目根目录、管理员入口、认证方式、密钥引用和主机指纹；任何不一致都在上传前停止
+- 禁止把上传的脚本传给 `root` / `sudo bash` 执行。管理员入口未就绪时明确说明缺项，不绕过预检。固定入口与回执协议见 [项目化 SSH 发布目标](references/secure-release-targets.md)。
+- `remote_release.sh` 保留作旧项目逻辑对照，不是新服务器上的特权入口；新生成的 `deploy_release.sh` 不上传也不执行它。项目原有的健康检查、Nginx/证书和回退行为需要由管理员入口按同等门禁实现并在隔离环境验证。
 - `--health-path` 必须对应真实可请求的后端健康端点；SQLite 项目生成时传入 `--sqlite-db-path`，并核对本机私有配置
 
 ### SQLite Release Scope And Backup
@@ -197,6 +212,8 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 远端切换和健康检查限时执行；失败时恢复旧代码、静态文件、env 和 service，并核实旧服务。数据库迁移不能自动回滚数据，发布前必须检查前后兼容性或项目提供的恢复方案。
 - 独立 systemd timer 每天生成一致性备份；本机 macOS launchd 每日及登录后补拉、验证。默认服务器保留 7 天、本机 30 天；未获异地验证回执的服务器副本不清理，始终至少保留两份。备份生成和本机验证分别记录，不把文件存在视为可恢复。
 - 已生成的项目脚本不会自动升级；再次调用本 Skill 时须保留该项目的自定义部署逻辑，逐项整合新门禁。
+- 仅 APK 与清单时使用 `deploy_static_files.sh`，不打包整个应用、不重启服务、不执行数据库门禁；上传目标只允许核准的两个文件，清单最后生效，回退恢复旧下载入口。
+- 静态发布前由 Agent 按本次授权、目标和实际文件哈希写权限 `600` 的 `.static-release-approval.local.json`；手工脚本缺少有效审批时在 SSH 前停止。结构见 [项目化 SSH 发布目标](references/secure-release-targets.md)。
 
 ## Structured Git Auto Approval
 
@@ -237,7 +254,12 @@ node deploy/aliyun/scripts/manage_git_release_commit.mjs approve \
   --message-file /tmp/release-commit-message.txt \
   --paths-file /tmp/release-commit-paths.txt \
   --git-tag <version-plan.gitTag> \
-  --db-change-scope <web|backend|data>
+  --db-change-scope <web|backend|data> \
+  --target-env <production|preview> --target-host <host> \
+  --target-user <account> --target-port <port> \
+  --target-root </service/project> --release-entry </admin/owned/entry> \
+  --target-auth <key|agent|password> --key-ref <private-key-path|agent-public-key-path|legacy-password> \
+  --host-fingerprint <verified-SHA256-fingerprint>
 ```
 
 当摘要明确纳入未跟踪文件时增加 `--allow-untracked true`；首次建仓审计通过后增加 `--allow-initial-all true`。
@@ -311,6 +333,10 @@ node deploy/aliyun/scripts/manage_git_release_commit.mjs approve \
 - remote 名默认 `origin`
 - 默认分支优先 `main`
 - 默认创建 private repo
+
+## 首次成功发布后的系统登记
+
+在项目使用本次升级后的流程首次**成功发布到生产**后，如果本机私有的 `deploy/aliyun/.first-publish-doc.local.json` 不存在，用飞书文档能力打开 [各服务数据库信息](https://ucnrmsg6xuey.feishu.cn/wiki/SxFxwUerXiCOcdkp6gGc6q9EnVb)，定位系统已有条目并更新：服务器主机/IP、ECS 区域或机房位置、业务端口、服务器项目目录和服务名、业务访问地址。以真实目标配置和发布回执为依据，不猜测位置，不写任何凭据。写入后读回核对，再以权限 `600` 写入本机标记（文档 ID、发布 tag、登记时间；禁止记录凭据）。文档失败不写标记，明确报告“发布成功、文档登记待补”；预览发布不更新生产条目。详见 [项目化 SSH 发布目标](references/secure-release-targets.md)。
 
 ### init_deploy_config.sh
 

@@ -5,7 +5,8 @@ umask 077
 MODE="${1:-pull}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-source "${PO_DEPLOY_ENV_FILE:-$DEPLOY_DIR/.deploy.local.sh}"
+export PO_DEPLOY_ENV_FILE="${PO_DEPLOY_ENV_FILE:-$DEPLOY_DIR/.deploy.local.sh}"
+source "$PO_DEPLOY_ENV_FILE"
 PROJECT="${PO_PROJECT_NAME:-$(basename "${PO_REMOTE_ROOT:?PO_REMOTE_ROOT is required}")}"
 REMOTE_DIR="${PO_REMOTE_BACKUP_DIR:-$PO_REMOTE_DATA_DIR/backups}"
 LOCAL_DIR="${PO_LOCAL_BACKUP_DIR:-$HOME/Backups/aliyun/$PROJECT}"
@@ -13,35 +14,18 @@ CHECK_TIMEOUT="${PO_DB_CHECK_TIMEOUT_SEC:-3600}"
 TRANSFER_TIMEOUT="${PO_DB_TRANSFER_TIMEOUT_SEC:-3600}"
 MAX_AGE_HOURS="${PO_BACKUP_MAX_AGE_HOURS:-48}"
 KEEP_DAYS="${PO_BACKUP_LOCAL_KEEP_DAYS:-30}"
-SSH_TARGET="${PO_DEPLOY_USER:?PO_DEPLOY_USER is required}@${PO_DEPLOY_HOST:?PO_DEPLOY_HOST is required}"
-SSH_PORT="${PO_DEPLOY_PORT:-22}"
+source "$SCRIPT_DIR/ssh_transport.sh"
+PO_APPROVED_DEPLOY_ENV="${PO_DEPLOY_ENV:?PO_DEPLOY_ENV is required}"
+po_transport_init
+po_check_login
 for n in "$CHECK_TIMEOUT" "$TRANSFER_TIMEOUT" "$MAX_AGE_HOURS" "$KEEP_DAYS"; do
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid backup timeout or retention' >&2; exit 1; }
 done
 [[ "$REMOTE_DIR" =~ ^/[A-Za-z0-9_./-]+$ ]] || { echo 'Unsafe remote backup path' >&2; exit 1; }
 mkdir -p "$LOCAL_DIR"
-SSH_ARGS=(-p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
-SCP_ARGS=(-P "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
-auth="${PO_SSH_AUTH_METHOD:-agent}"
-if [[ "$auth" == key ]]; then
-  SSH_ARGS+=(-o IdentitiesOnly=yes -i "${PO_SSH_KEY_FILE:?SSH key path is required}")
-  SCP_ARGS+=(-o IdentitiesOnly=yes -i "$PO_SSH_KEY_FILE")
-elif [[ "$auth" == password ]]; then
-  [[ -n "${PO_SSH_PASSWORD:-}" ]] || { echo 'SSH password is missing from local private config' >&2; exit 1; }
-  askpass="$(mktemp "$LOCAL_DIR/.ssh-askpass.XXXXXX")"
-  printf '#!/bin/sh\nprintf "%%s\\n" "$PO_SSH_PASSWORD"\n' > "$askpass"
-  chmod 700 "$askpass"
-  trap 'rm -f "$askpass"' EXIT
-  export SSH_ASKPASS="$askpass" SSH_ASKPASS_REQUIRE=force DISPLAY="${DISPLAY:-localhost:0}"
-  SSH_ARGS+=(-o BatchMode=no -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no)
-  SCP_ARGS+=(-o BatchMode=no -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no)
-elif [[ "$auth" != agent ]]; then
-  echo 'Invalid SSH authentication method' >&2
-  exit 1
-fi
 limited() { perl -e 'alarm shift @ARGV; exec @ARGV or die $!' "$1" "${@:2}"; }
-remote() { limited "$TRANSFER_TIMEOUT" ssh "${SSH_ARGS[@]}" "$SSH_TARGET" "$1"; }
-fetch() { limited "$TRANSFER_TIMEOUT" scp "${SCP_ARGS[@]}" "$SSH_TARGET:$1" "$2" >/dev/null; }
+remote() { limited "$TRANSFER_TIMEOUT" "${PO_SSH_PREFIX[@]}" ssh -T -p "$PO_DEPLOY_PORT" "${PO_SSH_OPTIONS[@]}" "$PO_SSH_TARGET" "$1"; }
+fetch() { limited "$TRANSFER_TIMEOUT" "${PO_SSH_PREFIX[@]}" scp -P "$PO_DEPLOY_PORT" "${PO_SSH_OPTIONS[@]}" "$PO_SSH_TARGET:$1" "$2" >/dev/null; }
 file_size() { stat -f %z "$1" 2>/dev/null || stat -c %s "$1"; }
 file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
 

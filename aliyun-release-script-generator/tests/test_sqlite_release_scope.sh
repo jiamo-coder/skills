@@ -107,18 +107,27 @@ bash "$SKILL_DIR/templates/sqlite_backup.sh" prune
 [[ ! -f "$PO_REMOTE_BACKUP_DIR/db-20000101T000000Z.sqlite" ]]
 [[ -f "$PO_REMOTE_BACKUP_DIR/db-20000201T000000Z.sqlite" ]]
 
+ssh-keygen -q -t ed25519 -N '' -f "$TMP/hostkey" >/dev/null
+host_public_key="$(cat "$TMP/hostkey.pub")"
+host_fingerprint="$(ssh-keygen -lf "$TMP/hostkey.pub" -E sha256 | awk '{print $2}')"
 cat > "$TMP/project/deploy/aliyun/.deploy.local.sh" <<EOF
 export PO_REMOTE_ROOT='$PO_REMOTE_ROOT'
 export PO_REMOTE_DATA_DIR='$TMP/remote/data'
 export PO_REMOTE_BACKUP_DIR='$PO_REMOTE_BACKUP_DIR'
 export PO_LOCAL_BACKUP_DIR='$TMP/local'
 export PO_DEPLOY_HOST='example.invalid'
-export PO_DEPLOY_USER='tester'
-export PO_SSH_AUTH_METHOD='agent'
+export PO_DEPLOY_USER='$(id -un)'
+export PO_DEPLOY_PORT='22'
+export PO_DEPLOY_ENV='production'
+export PO_SSH_AUTH_METHOD='key'
+export PO_SSH_KEY_FILE='$TMP/hostkey'
+export PO_SSH_HOST_PUBLIC_KEY='$host_public_key'
+export PO_SSH_HOST_FINGERPRINT='$host_fingerprint'
 export PO_BACKUP_MAX_AGE_HOURS='48'
 export PO_DB_CHECK_TIMEOUT_SEC='10'
 EOF
 cp "$SKILL_DIR/templates/pull_sqlite_backup.sh" "$TMP/project/deploy/aliyun/scripts/"
+cp "$SKILL_DIR/templates/ssh_transport.sh" "$TMP/project/deploy/aliyun/scripts/"
 pull="$TMP/project/deploy/aliyun/scripts/pull_sqlite_backup.sh"
 bash "$pull" pull-latest >/dev/null
 bash "$pull" verify-recent >/dev/null

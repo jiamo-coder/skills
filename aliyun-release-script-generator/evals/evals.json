@@ -21,14 +21,14 @@
     },
     {
       "id": 4,
-      "prompt": "第一次给当前项目生成阿里云发布脚本，服务器是 47.1.2.3，SSH 用户 root，端口 22，使用密码登录。请把服务器配置也落到项目里。",
-      "expected_output": "生成 init_deploy_config.sh 和权限为 600 的 deploy/aliyun/.deploy.local.sh，记录完整服务器连接字段、项目域名、业务端口和 Nginx/Certbot 状态变量并加入 .gitignore；不会要求用户在聊天中发送真实密码，也不会把配置提交到 Git。",
+      "prompt": "第一次给当前新项目生成阿里云发布脚本，服务器有专用 release_app 账号和 SSH 私钥。请把服务器配置也落到项目里。",
+      "expected_output": "生成 init_deploy_config.sh 和权限为 600 的项目私有目标配置，默认仅公钥认证；明确要求通过可信渠道填写服务器主机公钥和 SHA256 指纹、管理员维护的固定发布入口；不会索取或提交凭据，缺项时发布前停止。",
       "files": []
     },
     {
       "id": 5,
       "prompt": "给当前新项目生成发布脚本。首次发布自动生成独立 Nginx 配置并签证书，第二次发布不要再申请证书；如果证书失败，版本号和 tag 都不能变化。",
-      "expected_output": "生成 configure_nginx_site.sh 并在应用健康检查后调用；auto 模式按服务器配置和证书状态决定初始化或跳过，Certbot 失败会使部署失败并阻止版本 apply 和 Git 同步。",
+      "expected_output": "Nginx/Certbot 首次初始化由管理员维护的受控入口实现或预置；Agent 不把上传脚本交给 root。证书失败使发布失败并阻止版本 apply 和 Git 同步。",
       "files": []
     },
     {
@@ -53,6 +53,24 @@
       "id": 9,
       "prompt": "这个项目有 SQLite 迁移并批量更新生产数据，请按新版发布 Skill 生成脚本和每日异地备份。",
       "expected_output": "识别真实 SQLite 路径与迁移兼容性，写入 data 范围；切换前在生产机限时生成一致性备份并传至本机限时 quick_check，设置 ECS systemd 和本机 macOS launchd 定时任务；失败不写版本、不提交或打 tag。",
+      "files": []
+    },
+    {
+      "id": 10,
+      "prompt": "同一台 ECS 上的 Hub 生产和预览要用不同账号、密钥和发布目录。密钥失效或主机指纹不一致时不要上传。",
+      "expected_output": "分别选择本机私有目标文件，审批绑定环境、主机、账号、端口、目录与管理员入口；使用固定 host key 与选定密钥，预检失败时无密码回退、无远端写入。",
+      "files": []
+    },
+    {
+      "id": 11,
+      "prompt": "这次只更新 Geetimer 安卓 APK 和更新清单，不改 API 或 SQLite。",
+      "expected_output": "使用核准文件名的静态发布入口，校验 APK 和清单哈希，管理员入口先切换文件后切换清单并可回退旧下载入口；不重启应用、不执行数据库门禁。",
+      "files": []
+    },
+    {
+      "id": 12,
+      "prompt": "升级后首次成功把小算盘发布到生产，请登记它的 ECS 信息。",
+      "expected_output": "读取指定飞书文档中的系统条目，基于已核实的发布回执、ECS 位置、业务端口、服务器目录和访问地址做定点更新，读回核验；缺少权限或事实时报告待补，不写凭据、不创建重复条目。",
       "files": []
     }
   ]

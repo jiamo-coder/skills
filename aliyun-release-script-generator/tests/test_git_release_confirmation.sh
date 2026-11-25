@@ -4,6 +4,7 @@ set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_ROOT="$(mktemp -d)"
+export TEST_ROOT
 cleanup() {
   local status="$?"
   if [[ "${KEEP_TEST_ROOT:-0}" == "1" ]]; then
@@ -219,6 +220,9 @@ bash -n "$MULTI_SCRIPTS/"*.sh
 node --check "$MULTI_SCRIPTS/manage_release_version.mjs"
 node --check "$MULTI_SCRIPTS/manage_git_release_commit.mjs"
 grep -Fq 'PO_REMOTE_DATABASE_FILE=/service/multi-app/data/app.sqlite' "$MULTI/deploy/aliyun/.deploy.local.sh"
+bash "$MULTI_SCRIPTS/init_deploy_config.sh" --target-env preview --non-interactive >/dev/null
+grep -Fq 'PO_DEPLOY_ENV=preview' "$MULTI/deploy/aliyun/.deploy.preview.local.sh"
+[[ "$(stat -f %Lp "$MULTI/deploy/aliyun/.deploy.preview.local.sh")" == 600 ]]
 MULTI_ARCHIVE="$MULTI/deploy/aliyun/release/multi-app-smoke.tgz"
 tar -tzf "$MULTI_ARCHIVE" | grep -Fq './deploy/aliyun/manage_git_release_commit.mjs'
 tar -tzf "$MULTI_ARCHIVE" | grep -Fq './web/index.html'
@@ -229,37 +233,43 @@ PO_RELEASE_TYPE_ZH=修复优化 bash "$OUTPUT_DIR/package_release.sh" failed-rel
 printf 'app.txt\n' > "$PATHS_FILE"
 node "$APPROVAL_TOOL" approve --message-file "$MESSAGE_FILE" --paths-file "$PATHS_FILE" --git-tag v1.0.2-build.2 --db-change-scope web >/dev/null
 mkdir -p "$TEST_ROOT/failing-bin"
-printf '#!/usr/bin/env bash\nexit 1\n' > "$TEST_ROOT/failing-bin/scp"
+printf '#!/usr/bin/env bash\ntouch "$TEST_ROOT/scp-invoked"\nexit 1\n' > "$TEST_ROOT/failing-bin/scp"
 chmod +x "$TEST_ROOT/failing-bin/scp"
 cat > "$TEST_ROOT/failing-deploy.local.sh" <<'EOF'
 export PO_DEPLOY_HOST=example.invalid
 export PO_DEPLOY_USER=tester
-export PO_SSH_AUTH_METHOD=agent
+export PO_DEPLOY_PORT=22
+export PO_DEPLOY_ENV=production
+export PO_REMOTE_RELEASE_ENTRY=/usr/local/sbin/smoke-release
+export PO_SSH_AUTH_METHOD=key
+export PO_SSH_KEY_FILE=/missing/key
+export PO_SSH_HOST_FINGERPRINT=SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 export PO_PROJECT_DOMAIN=smoke.example.com
 export PO_APP_PORT=8123
 export PO_NGINX_SETUP_MODE=skip
 EOF
 if env PATH="$TEST_ROOT/failing-bin:$PATH" PO_DEPLOY_ENV_FILE="$TEST_ROOT/failing-deploy.local.sh" \
   bash "$DEPLOY_TOOL" failed-release > "$TEST_ROOT/failed-deploy.log" 2>&1; then
-  echo 'Expected deployment upload to fail' >&2
+  echo 'Expected unbound target approval to fail' >&2
   exit 1
 fi
-grep -Fq '上传发布包' "$TEST_ROOT/failed-deploy.log"
+grep -Fq '本次授权的环境' "$TEST_ROOT/failed-deploy.log"
+[[ ! -e "$TEST_ROOT/scp-invoked" ]]
+node -e 'const d=require(process.argv[1]); if(d.status!=="failed"||d.stage!=="approval"||!d.artifactSha256) process.exit(1)' "$PROJECT/deploy/aliyun/release/smoke-app-failed-release.execution.json"
 node -e 'if (require(process.argv[1]).version !== "1.0.1") process.exit(1)' "$PROJECT/package.json"
 expect_failure git -C "$PROJECT" rev-parse --verify refs/tags/v1.0.2-build.2
 
-node "$APPROVAL_TOOL" approve --message-file "$MESSAGE_FILE" --paths-file "$PATHS_FILE" --git-tag v1.0.2-build.2 --db-change-scope backend >/dev/null
-printf 'export PO_REMOTE_DATABASE_FILE=/service/smoke-app/data/app.sqlite\n' >> "$TEST_ROOT/failing-deploy.local.sh"
-printf '#!/usr/bin/env bash\necho __PO_DB_STATE_initial__\n' > "$TEST_ROOT/failing-bin/ssh"
-printf '#!/usr/bin/env bash\necho Linux\n' > "$TEST_ROOT/failing-bin/uname"
-chmod +x "$TEST_ROOT/failing-bin/ssh" "$TEST_ROOT/failing-bin/uname"
+node "$APPROVAL_TOOL" approve --message-file "$MESSAGE_FILE" --paths-file "$PATHS_FILE" --git-tag v1.0.2-build.2 --db-change-scope web \
+  --target-env production --target-host example.invalid --target-user tester --target-port 22 \
+  --target-root /service/smoke-app --release-entry /usr/local/sbin/smoke-release \
+  --target-auth key --key-ref /missing/key --host-fingerprint SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA >/dev/null
+expect_failure node "$APPROVAL_TOOL" verify --approval-file "$APPROVAL_FILE" --git-tag v1.0.2-build.2 \
+  --target-env production --target-host example.invalid --target-user tester --target-port 22 \
+  --target-root /service/smoke-app --release-entry /usr/local/sbin/smoke-release \
+  --target-auth key --key-ref /different/key --host-fingerprint SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 if env PATH="$TEST_ROOT/failing-bin:$PATH" PO_DEPLOY_ENV_FILE="$TEST_ROOT/failing-deploy.local.sh" \
-  bash "$DEPLOY_TOOL" failed-release > "$TEST_ROOT/initial-db-deploy.log" 2>&1; then exit 1; fi
-grep -Fq '首次空库部署' "$TEST_ROOT/initial-db-deploy.log"
-grep -Fq '上传发布包' "$TEST_ROOT/initial-db-deploy.log"
-printf '#!/usr/bin/env bash\necho __PO_DB_STATE_missing__\n' > "$TEST_ROOT/failing-bin/ssh"
-if env PATH="$TEST_ROOT/failing-bin:$PATH" PO_DEPLOY_ENV_FILE="$TEST_ROOT/failing-deploy.local.sh" \
-  bash "$DEPLOY_TOOL" failed-release > "$TEST_ROOT/missing-db-deploy.log" 2>&1; then exit 1; fi
-grep -Fq 'SQLite 文件缺失' "$TEST_ROOT/missing-db-deploy.log"
+  bash "$DEPLOY_TOOL" failed-release > "$TEST_ROOT/missing-key-deploy.log" 2>&1; then exit 1; fi
+grep -Fq '可信渠道核实的 Ed25519 主机公钥' "$TEST_ROOT/missing-key-deploy.log"
+[[ ! -e "$TEST_ROOT/scp-invoked" ]]
 
 echo "git release confirmation workflow passed"

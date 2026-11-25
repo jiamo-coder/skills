@@ -31,12 +31,16 @@
 - 是否需要上传额外运行时资源
 - 发布后是否需要自动同步 GitHub
 - 服务器 IP/Host、SSH 用户、SSH 端口、认证方式
+- 生产与预览分别选择了哪个私有目标文件；审批环境、主机、账号、目录和管理员入口是否逐项一致
+- 私钥文件或 agent 中选定的公钥是否可用；主机 Ed25519 公钥与 SHA-256 指纹是否经可信渠道核实
+- 普通账号是否只对获批目录、服务和固定入口有权限；入口及其父目录是否由管理员持有且不可由发布账号修改
 - 后端监听端口，以及 env、Nginx upstream、健康检查三处是否一致
 - 项目公网域名及其 A 记录是否已指向目标服务器
 - 服务器 80/443 是否可达，Nginx、Certbot 和 Certbot 账户是否就绪
 - 项目 Nginx 是新式受管配置、旧式 `conf.d` 配置还是人工维护配置
 - SQLite 文件实际路径、迁移/批量数据写入入口、健康端点及数据库权限
 - 48 小时内本机已校验备份和远端清单是否对应；异地拉取调度是否运行
+- 仅 APK/清单发布时两个核准文件名、目标目录、清单最后切换及回退下载入口是否可验证
 
 ## Packaging Facts
 
@@ -65,6 +69,7 @@
 - `deploy/aliyun/scripts/init_deploy_config.sh`
 - `deploy/aliyun/scripts/configure_nginx_site.sh`
 - `deploy/aliyun/scripts/sqlite_backup.sh`、`pull_sqlite_backup.sh`、`install_sqlite_backup_schedule.sh`、`remote_release.sh`
+- `deploy/aliyun/scripts/ssh_transport.sh`、`deploy_static_files.sh`
 - `deploy/aliyun/.deploy.local.sh`（首次自动创建，本机私有）
 - `deploy/aliyun/.git-release-approval.local.json`（梳理后自动创建，本机私有）
 
@@ -75,3 +80,4 @@
 - `deploy/aliyun/env/*.env*`
 
 新项目的 Nginx 模板应使用 `/etc/nginx/projects.d/<project>.conf`，全局入口只使用 `/etc/nginx/conf.d/00-managed-projects.conf`。现有旧项目不自动迁移。
+升级后首次成功生产发布，还需在指定飞书文档中更新服务器、位置、业务端口、项目目录和访问地址并读回；预览环境不更新生产条目。

@@ -55,7 +55,7 @@ SQLITE_DB_PATH=""
 RUNTIME_INSTALL_CMD="npm install --omit=dev --legacy-peer-deps"
 RELEASE_PREFIX=""
 DEPLOY_HOST=""
-DEPLOY_USER="root"
+DEPLOY_USER=""
 DEPLOY_PORT="22"
 SSH_AUTH_METHOD=""
 SSH_KEY_FILE=""
@@ -144,8 +144,10 @@ SQLITE_BACKUP_SCRIPT="$OUTPUT_DIR/sqlite_backup.sh"
 SQLITE_PULL_SCRIPT="$OUTPUT_DIR/pull_sqlite_backup.sh"
 SQLITE_SCHEDULE_SCRIPT="$OUTPUT_DIR/install_sqlite_backup_schedule.sh"
 REMOTE_RELEASE_SCRIPT="$OUTPUT_DIR/remote_release.sh"
+SSH_TRANSPORT_SCRIPT="$OUTPUT_DIR/ssh_transport.sh"
+STATIC_DEPLOY_SCRIPT="$OUTPUT_DIR/deploy_static_files.sh"
 TEMPLATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../templates" && pwd)"
-for template in sqlite_backup.sh pull_sqlite_backup.sh install_sqlite_backup_schedule.sh remote_release.sh; do
+for template in sqlite_backup.sh pull_sqlite_backup.sh install_sqlite_backup_schedule.sh remote_release.sh ssh_transport.sh deploy_static_files.sh; do
   if [[ ! -f "$TEMPLATE_DIR/$template" ]]; then
     echo "缺少发布模板: $TEMPLATE_DIR/$template" >&2
     exit 1
@@ -223,7 +225,8 @@ set -euo pipefail
 SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="\$(cd "\${SCRIPT_DIR}/../../.." && pwd)"
 DEPLOY_DIR="\$ROOT_DIR/deploy/aliyun"
-CONFIG_FILE="\${PO_DEPLOY_ENV_FILE:-\$DEPLOY_DIR/.deploy.local.sh}"
+CONFIG_FILE="\${PO_DEPLOY_ENV_FILE:-}"
+TARGET_ENV="\${PO_DEPLOY_ENV:-production}"
 PROJECT_SLUG=$PROJECT_SLUG
 PROJECT_DOMAIN=$PROJECT_DOMAIN_Q
 APP_PORT=$APP_PORT_Q
@@ -237,7 +240,7 @@ NON_INTERACTIVE=0
 usage() {
   cat <<'USAGE'
 Usage:
-  init_deploy_config.sh [--host <ip-or-host>] [--user <ssh-user>] [--port <ssh-port>]
+  init_deploy_config.sh [--target-env <production|preview|name>] [--host <ip-or-host>] [--user <ssh-user>] [--port <ssh-port>]
                         [--auth <password|key|agent>] [--key-file <path>]
                         [--domain <domain>] [--app-port <port>]
                         [--non-interactive]
@@ -257,7 +260,12 @@ ensure_gitignore_entry() {
   local ignore_file="\$ROOT_DIR/.gitignore"
   local entries=(
     "/deploy/aliyun/.deploy.local.sh"
+    "/deploy/aliyun/.deploy.*.local.sh"
     "/deploy/aliyun/.git-release-approval.local.json"
+    "/deploy/aliyun/.static-release-approval.local.json"
+    "/deploy/aliyun/.ssh-transport.local/"
+    "/deploy/aliyun/.first-publish-doc.local.json"
+    "/deploy/aliyun/release/"
   )
   touch "\$ignore_file"
   local entry
@@ -275,17 +283,24 @@ ensure_not_tracked() {
   local private_path
   for private_path in \
     "deploy/aliyun/.deploy.local.sh" \
-    "deploy/aliyun/.git-release-approval.local.json"; do
+    "deploy/aliyun/.git-release-approval.local.json" \
+    "deploy/aliyun/.static-release-approval.local.json" \
+    "deploy/aliyun/.first-publish-doc.local.json"; do
     if git -C "\$ROOT_DIR" ls-files --error-unmatch "\$private_path" >/dev/null 2>&1; then
       echo "安全错误: \$private_path 已被 Git 跟踪，请先从 Git 索引移除。" >&2
       exit 1
     fi
   done
+  if [[ "\$CONFIG_FILE" == "\$ROOT_DIR/"* ]] && git -C "\$ROOT_DIR" ls-files --error-unmatch "\${CONFIG_FILE#\$ROOT_DIR/}" >/dev/null 2>&1; then
+    echo "安全错误: 当前目标配置已被 Git 跟踪" >&2
+    exit 1
+  fi
 }
 
 while [[ \$# -gt 0 ]]; do
   case "\$1" in
     --host) DEPLOY_HOST="\$2"; shift 2 ;;
+    --target-env) TARGET_ENV="\$2"; shift 2 ;;
     --user) DEPLOY_USER="\$2"; shift 2 ;;
     --port) DEPLOY_PORT="\$2"; shift 2 ;;
     --auth) SSH_AUTH_METHOD="\$2"; shift 2 ;;
@@ -297,6 +312,15 @@ while [[ \$# -gt 0 ]]; do
     *) echo "未知参数: \$1" >&2; usage >&2; exit 1 ;;
   esac
 done
+
+[[ "\$TARGET_ENV" =~ ^[a-z][a-z0-9-]*$ ]] || { echo '目标环境名不合法' >&2; exit 1; }
+if [[ -z "\$CONFIG_FILE" ]]; then
+  if [[ "\$TARGET_ENV" == production ]]; then
+    CONFIG_FILE="\$DEPLOY_DIR/.deploy.local.sh"
+  else
+    CONFIG_FILE="\$DEPLOY_DIR/.deploy.\$TARGET_ENV.local.sh"
+  fi
+fi
 
 if [[ -f "\$CONFIG_FILE" ]]; then
   chmod 600 "\$CONFIG_FILE"
@@ -361,12 +385,23 @@ trap 'rm -f "\$TEMP_FILE"' EXIT
   shell_export PO_DEPLOY_HOST "\$DEPLOY_HOST"
   shell_export PO_DEPLOY_USER "\$DEPLOY_USER"
   shell_export PO_DEPLOY_PORT "\$DEPLOY_PORT"
+  shell_export PO_DEPLOY_ENV "\$TARGET_ENV"
   shell_export PO_SSH_AUTH_METHOD "\$SSH_AUTH_METHOD"
   shell_export PO_SSH_PASSWORD "\$SSH_PASSWORD"
   shell_export PO_SSH_KEY_FILE "\$SSH_KEY_FILE"
+  shell_export PO_SSH_AGENT_PUBLIC_KEY_FILE ""
+  shell_export PO_SSH_HOST_PUBLIC_KEY ""
+  shell_export PO_SSH_HOST_FINGERPRINT ""
+  shell_export PO_REMOTE_RELEASE_ENTRY ""
+  shell_export PO_LEGACY_PASSWORD_AUTH "0"
   printf '\n'
   shell_export PO_PROJECT_DOMAIN "\$PROJECT_DOMAIN"
+  shell_export PO_PROJECT_NAME "\$PROJECT_SLUG"
   shell_export PO_APP_PORT "\$APP_PORT"
+  shell_export PO_SERVER_LOCATION ""
+  shell_export PO_STATIC_TARGET_DIR ""
+  shell_export PO_STATIC_APK_NAME ""
+  shell_export PO_STATIC_MANIFEST_NAME ""
   shell_export PO_REMOTE_ROOT "/service/\$PROJECT_SLUG"
   printf 'export PO_REMOTE_CURRENT_DIR="\$PO_REMOTE_ROOT/current"\n'
   printf 'export PO_REMOTE_RELEASES_DIR="\$PO_REMOTE_ROOT/releases"\n'
@@ -885,34 +920,7 @@ if [[ -z "\$NGINX_SETUP_MODE" ]]; then
   esac
 fi
 
-if [[ -z "\$SSH_AUTH_METHOD" ]]; then
-  if [[ -n "\$SSH_PASSWORD" ]]; then
-    SSH_AUTH_METHOD="password"
-  elif [[ -n "\$SSH_KEY_FILE" ]]; then
-    SSH_AUTH_METHOD="key"
-  else
-    SSH_AUTH_METHOD="agent"
-  fi
-fi
-case "\$SSH_AUTH_METHOD" in
-  password)
-    if [[ -z "\$SSH_PASSWORD" ]]; then
-      echo "PO_SSH_AUTH_METHOD=password 时必须在本机配置 PO_SSH_PASSWORD" >&2
-      exit 1
-    fi
-    ;;
-  key)
-    if [[ -z "\$SSH_KEY_FILE" || ! -f "\$SSH_KEY_FILE" ]]; then
-      echo "PO_SSH_AUTH_METHOD=key 时必须配置存在的 PO_SSH_KEY_FILE" >&2
-      exit 1
-    fi
-    ;;
-  agent) ;;
-  *)
-    echo "PO_SSH_AUTH_METHOD 仅支持 password / key / agent" >&2
-    exit 1
-    ;;
-esac
+SSH_AUTH_METHOD="\${PO_SSH_AUTH_METHOD:-key}"
 
 case "\$NGINX_SETUP_MODE" in
   auto|skip|force) ;;
@@ -958,6 +966,9 @@ require_cmd perl
 require_env DEPLOY_HOST
 require_env DEPLOY_USER
 validate_artifact "\$ARTIFACT"
+export PO_DEPLOY_ENV_FILE="\$DEPLOY_ENV_FILE"
+# The same pinned transport is used for preflight, upload and remote execution.
+source "\$DEPLOY_DIR/scripts/ssh_transport.sh"
 for seconds in "\$DB_BACKUP_TIMEOUT_SEC" "\$DB_BACKUP_TOTAL_TIMEOUT_SEC" "\$REMOTE_DEPLOY_TIMEOUT_SEC" "\$HEALTH_TIMEOUT_SEC" "\$SSH_COMMAND_TIMEOUT_SEC"; do
   if [[ ! "\$seconds" =~ ^[1-9][0-9]*$ ]]; then echo '超时配置必须是正整数秒' >&2; exit 1; fi
 done
@@ -967,10 +978,46 @@ if (( SSH_COMMAND_TIMEOUT_SEC <= DB_BACKUP_TOTAL_TIMEOUT_SEC + 60 || SSH_COMMAND
 fi
 
 RELEASE_GIT_TAG="\$(node -e 'const fs=require("fs"); const plan=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (!plan.gitTag) process.exit(1); process.stdout.write(plan.gitTag);' "\$VERSION_PLAN_FILE")"
+ARTIFACT_SHA="\$(shasum -a 256 "\$ARTIFACT" | awk '{print \$1}')"
+EVIDENCE_FILE="\${ARTIFACT%.tgz}.execution.json"
+RELEASE_STAGE=approval
+ROLLBACK_STATE=not-started
+record_evidence() {
+  local status="\$1"
+  PO_EVIDENCE_FILE="\$EVIDENCE_FILE" PO_EVIDENCE_STAGE="\$RELEASE_STAGE" \\
+  PO_EVIDENCE_STATUS="\$status" PO_EVIDENCE_ROLLBACK="\$ROLLBACK_STATE" \\
+  PO_EVIDENCE_TAG="\$RELEASE_GIT_TAG" PO_EVIDENCE_SHA="\$ARTIFACT_SHA" \\
+  PO_EVIDENCE_HOST="\$DEPLOY_HOST" PO_EVIDENCE_USER="\$DEPLOY_USER" \\
+  PO_EVIDENCE_ENV="\${PO_DEPLOY_ENV:-unknown}" PO_EVIDENCE_SCOPE="\${DB_CHANGE_SCOPE:-unknown}" \\
+  node -e 'const fs=require("fs"), e=process.env, p=e.PO_EVIDENCE_FILE; const old=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,"utf8")):{}; const stageStatus=e.PO_EVIDENCE_STATUS==="stage-ok"?"success":e.PO_EVIDENCE_STATUS==="0"?"success":"failed"; const stages={...old.stages,[e.PO_EVIDENCE_STAGE]:stageStatus}; const status=e.PO_EVIDENCE_STATUS==="stage-ok"?"pending":stageStatus; const data={...old,targetEnvironment:e.PO_EVIDENCE_ENV,host:e.PO_EVIDENCE_HOST,account:e.PO_EVIDENCE_USER,accountRole:"project-release",releaseTag:e.PO_EVIDENCE_TAG,artifactSha256:e.PO_EVIDENCE_SHA,scope:e.PO_EVIDENCE_SCOPE,stage:e.PO_EVIDENCE_STAGE,stages,status,rollback:e.PO_EVIDENCE_ROLLBACK,updatedAt:new Date().toISOString()}; fs.writeFileSync(p,JSON.stringify(data,null,2)+"\\n",{mode:0o600}); fs.chmodSync(p,0o600)'
+}
+trap 'status=\$?; record_evidence "\$status" || true' EXIT
+case "\$SSH_AUTH_METHOD" in
+  key) TARGET_KEY_REF="\${PO_SSH_KEY_FILE:-}" ;;
+  agent) TARGET_KEY_REF="\${PO_SSH_AGENT_PUBLIC_KEY_FILE:-}" ;;
+  password) TARGET_KEY_REF=legacy-password ;;
+  *) echo '认证方式无效' >&2; exit 1 ;;
+esac
 node "\$DEPLOY_DIR/scripts/manage_git_release_commit.mjs" verify \\
   --approval-file "\$GIT_APPROVAL_FILE" \\
-  --git-tag "\$RELEASE_GIT_TAG"
+  --git-tag "\$RELEASE_GIT_TAG" \\
+  --target-env "\${PO_DEPLOY_ENV:-}" --target-host "\$DEPLOY_HOST" \\
+  --target-user "\$DEPLOY_USER" --target-port "\$DEPLOY_PORT" \\
+  --target-root "\$REMOTE_ROOT" --release-entry "\${PO_REMOTE_RELEASE_ENTRY:-}" \\
+  --target-auth "\$SSH_AUTH_METHOD" --key-ref "\$TARGET_KEY_REF" \\
+  --host-fingerprint "\${PO_SSH_HOST_FINGERPRINT:-}"
 DB_CHANGE_SCOPE="\$(node -e 'const a=require(process.argv[1]); if (!["web","backend","data"].includes(a.dbChangeScope)) process.exit(1); process.stdout.write(a.dbChangeScope)' "\$GIT_APPROVAL_FILE")"
+PO_APPROVED_DEPLOY_ENV="\$(node -e 'const a=require(process.argv[1]); if (a.schemaVersion !== 3 || !a.target?.env) process.exit(1); process.stdout.write(a.target.env)' "\$GIT_APPROVAL_FILE")" || { echo '发布审批未绑定目标环境，请重新梳理' >&2; exit 1; }
+record_evidence stage-ok
+RELEASE_STAGE=transport
+po_transport_init
+record_evidence stage-ok
+RELEASE_STAGE=login
+po_check_login
+record_evidence stage-ok
+RELEASE_STAGE=permission
+po_check_release_entry "$PROJECT_SLUG" "\$DB_CHANGE_SCOPE" "\$REMOTE_ROOT" "\$REMOTE_SERVICE_NAME"
+record_evidence stage-ok
 if [[ "\$DB_CHANGE_SCOPE" != web && -z "\$REMOTE_DATABASE_FILE" ]]; then
   echo '后端/数据发布必须在本机私有配置中设置 PO_REMOTE_DATABASE_FILE' >&2
   exit 1
@@ -981,83 +1028,13 @@ if [[ -n "\$REMOTE_DATABASE_FILE" && ! "\$REMOTE_DATABASE_FILE" =~ ^/[A-Za-z0-9_
 fi
 
 run_scp() {
-  local source_path="\$1"
-  local remote_path="\$2"
-
-  if [[ "\$SSH_AUTH_METHOD" == "password" ]]; then
-    require_cmd expect
-    DEPLOY_HOST="\$DEPLOY_HOST" \\
-    DEPLOY_USER="\$DEPLOY_USER" \\
-    DEPLOY_PORT="\$DEPLOY_PORT" \\
-    SSH_PASSWORD="\$SSH_PASSWORD" \\
-    DEPLOY_TIMEOUT="\$SSH_COMMAND_TIMEOUT_SEC" \\
-    SOURCE_PATH="\$source_path" \\
-    REMOTE_PATH="\$remote_path" \\
-    expect <<'EXPECT_EOF'
-set timeout \$env(DEPLOY_TIMEOUT)
-set password \$env(SSH_PASSWORD)
-set host \$env(DEPLOY_HOST)
-set user \$env(DEPLOY_USER)
-set port \$env(DEPLOY_PORT)
-set source \$env(SOURCE_PATH)
-set target \$env(REMOTE_PATH)
-spawn scp -P \$port -o StrictHostKeyChecking=accept-new \$source "\$user@\$host:\$target"
-expect {
-  -re {.*yes/no.*} { send "yes\r"; exp_continue }
-  -re {.*[Pp]assword:.*} { send "\$password\r"; exp_continue }
-  -re {.*\[sudo\].*[Pp]assword.*} { send "\$password\r"; exp_continue }
-  eof
-  timeout { exit 124 }
-}
-catch wait result
-exit [lindex \$result 3]
-EXPECT_EOF
-  else
-    local scp_args=(-P "\$DEPLOY_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
-    if [[ "\$SSH_AUTH_METHOD" == "key" ]]; then
-      scp_args+=(-o IdentitiesOnly=yes -i "\$SSH_KEY_FILE")
-    fi
-    perl -e 'alarm shift @ARGV; exec @ARGV or die \$!' "\$SSH_COMMAND_TIMEOUT_SEC" scp "\${scp_args[@]}" "\$source_path" "\$DEPLOY_USER@\$DEPLOY_HOST:\$remote_path"
-  fi
+  perl -e 'alarm shift @ARGV; exec @ARGV or die \$!' "\$SSH_COMMAND_TIMEOUT_SEC" \\
+    "\${PO_SSH_PREFIX[@]}" scp -P "\$DEPLOY_PORT" "\${PO_SSH_OPTIONS[@]}" "\$1" "\$PO_SSH_TARGET:\$2"
 }
 
 run_ssh() {
-  local remote_command="\$1"
-
-  if [[ "\$SSH_AUTH_METHOD" == "password" ]]; then
-    require_cmd expect
-    DEPLOY_HOST="\$DEPLOY_HOST" \\
-    DEPLOY_USER="\$DEPLOY_USER" \\
-    DEPLOY_PORT="\$DEPLOY_PORT" \\
-    SSH_PASSWORD="\$SSH_PASSWORD" \\
-    DEPLOY_TIMEOUT="\$SSH_COMMAND_TIMEOUT_SEC" \\
-    REMOTE_COMMAND="\$remote_command" \\
-    expect <<'EXPECT_EOF'
-set timeout \$env(DEPLOY_TIMEOUT)
-set password \$env(SSH_PASSWORD)
-set host \$env(DEPLOY_HOST)
-set user \$env(DEPLOY_USER)
-set port \$env(DEPLOY_PORT)
-set command \$env(REMOTE_COMMAND)
-spawn ssh -tt -p \$port -o StrictHostKeyChecking=accept-new "\$user@\$host" \$command
-expect {
-  -re {.*yes/no.*} { send "yes\r"; exp_continue }
-  -re {.*[Pp]assword:.*} { send "\$password\r"; exp_continue }
-  -re {.*\[sudo\].*[Pp]assword.*} { send "\$password\r"; exp_continue }
-  eof
-  timeout { exit 124 }
-}
-
-catch wait result
-exit [lindex \$result 3]
-EXPECT_EOF
-  else
-    local ssh_args=(-p "\$DEPLOY_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
-    if [[ "\$SSH_AUTH_METHOD" == "key" ]]; then
-      ssh_args+=(-o IdentitiesOnly=yes -i "\$SSH_KEY_FILE")
-    fi
-    perl -e 'alarm shift @ARGV; exec @ARGV or die \$!' "\$SSH_COMMAND_TIMEOUT_SEC" ssh "\${ssh_args[@]}" "\$DEPLOY_USER@\$DEPLOY_HOST" "\$remote_command"
-  fi
+  perl -e 'alarm shift @ARGV; exec @ARGV or die \$!' "\$SSH_COMMAND_TIMEOUT_SEC" \\
+    "\${PO_SSH_PREFIX[@]}" ssh -T -p "\$DEPLOY_PORT" "\${PO_SSH_OPTIONS[@]}" "\$PO_SSH_TARGET" "\$1"
 }
 
 DB_BOOTSTRAP=0
@@ -1074,12 +1051,16 @@ if [[ "\$DB_CHANGE_SCOPE" != web ]]; then
   fi
 fi
 if [[ "\$DB_CHANGE_SCOPE" == backend && "\$DB_BOOTSTRAP" == 0 ]]; then
+  RELEASE_STAGE=backup-verification
   bash "\$DEPLOY_DIR/scripts/pull_sqlite_backup.sh" verify-recent
+  record_evidence stage-ok
 fi
 
 TMP_DIR="\$(mktemp -d)"
 cleanup() {
+  local status="\$?"
   rm -rf "\$TMP_DIR"
+  record_evidence "\$status" || true
 }
 trap cleanup EXIT
 
@@ -1106,21 +1087,21 @@ sed \\
   "\$SERVICE_TEMPLATE" > "\$LOCAL_SERVICE_FILE"
 
 REMOTE_ARTIFACT="/tmp/\$(basename "\$ARTIFACT")"
-REMOTE_UPLOAD_ENV_FILE="/tmp/\$ENV_BASENAME"
-REMOTE_SERVICE_FILE="/tmp/\$REMOTE_SERVICE_NAME"
 RELEASE_NAME="\$(basename "\$ARTIFACT" .tgz)"
+REMOTE_UPLOAD_ENV_FILE="/tmp/\$RELEASE_NAME-\$ENV_BASENAME"
+REMOTE_SERVICE_FILE="/tmp/\$RELEASE_NAME-\$REMOTE_SERVICE_NAME"
 REMOTE_RELEASE_DIR="\$REMOTE_RELEASES_DIR/\$RELEASE_NAME"
-REMOTE_RELEASE_SCRIPT="/tmp/\$RELEASE_NAME-remote-release.sh"
 REMOTE_BACKUP_SCRIPT="/tmp/\$RELEASE_NAME-sqlite-backup.sh"
 
 echo "[$PROJECT_SLUG] 上传发布包..."
+RELEASE_STAGE=upload
 run_scp "\$ARTIFACT" "\$REMOTE_ARTIFACT"
 run_scp "\$TMP_DIR/\$ENV_BASENAME" "\$REMOTE_UPLOAD_ENV_FILE"
 run_scp "\$LOCAL_SERVICE_FILE" "\$REMOTE_SERVICE_FILE"
-run_scp "\$DEPLOY_DIR/scripts/remote_release.sh" "\$REMOTE_RELEASE_SCRIPT"
 if [[ "\$DB_CHANGE_SCOPE" == data ]]; then
   run_scp "\$DEPLOY_DIR/scripts/sqlite_backup.sh" "\$REMOTE_BACKUP_SCRIPT"
 fi
+record_evidence stage-ok
 
 REMOTE_ENV_PREFIX=""
 append_remote_env() {
@@ -1175,14 +1156,25 @@ append_remote_env HAS_ADMIN "$HAS_ADMIN"
 append_remote_env PO_REMOTE_RUN_USER "\$REMOTE_RUN_USER"
 
 if [[ "\$DB_CHANGE_SCOPE" == data && "\$DB_BOOTSTRAP" == 0 ]]; then
+  RELEASE_STAGE=backup-create-and-local-check
   run_ssh "\${REMOTE_ENV_PREFIX}timeout --signal=TERM --kill-after=30s \$DB_BACKUP_TOTAL_TIMEOUT_SEC bash \$REMOTE_BACKUP_SCRIPT create"
   bash "\$DEPLOY_DIR/scripts/pull_sqlite_backup.sh" pull-latest
+  record_evidence stage-ok
 fi
 
-REMOTE_CMD="\${REMOTE_ENV_PREFIX}timeout --signal=TERM --kill-after=180s \$REMOTE_DEPLOY_TIMEOUT_SEC bash \$REMOTE_RELEASE_SCRIPT"
+RELEASE_STAGE=remote-deploy-health
+printf -v REMOTE_CMD 'timeout --signal=TERM --kill-after=180s %q sudo -n -- %q deploy %q %q %q %q %q %q %q %q %q %q' \\
+  "\$REMOTE_DEPLOY_TIMEOUT_SEC" "\$PO_REMOTE_RELEASE_ENTRY" "$PROJECT_SLUG" "\$DB_CHANGE_SCOPE" \\
+  "\$REMOTE_ROOT" "\$REMOTE_SERVICE_NAME" "\$REMOTE_ARTIFACT" "\$ARTIFACT_SHA" \\
+  "\$REMOTE_UPLOAD_ENV_FILE" "\$REMOTE_SERVICE_FILE" "\$RELEASE_GIT_TAG" "\$PROJECT_DOMAIN"
+REMOTE_RECEIPT="\$(run_ssh "\$REMOTE_CMD")" || { echo '受控发布入口失败；请查看管理员侧记录，确认回退状态。版本和 Git 未推进。' >&2; exit 1; }
+[[ "\$REMOTE_RECEIPT" == "PO_RELEASE_OK:\$RELEASE_GIT_TAG:\$ARTIFACT_SHA:healthy:rollback-not-needed" ]] || {
+  echo '受控入口未返回健康检查与回退状态回执；停止版本和 Git 同步。' >&2; exit 1;
+}
+ROLLBACK_STATE=not-needed
+record_evidence stage-ok
 
-run_ssh "\$REMOTE_CMD"
-
+RELEASE_STAGE=version-and-git
 VERSION_ENV_OUTPUT="\$(node "\$DEPLOY_DIR/scripts/manage_release_version.mjs" apply --plan-file "\$VERSION_PLAN_FILE" --format env)"
 eval "\$VERSION_ENV_OUTPUT"
 
@@ -1191,8 +1183,10 @@ bash "\$DEPLOY_DIR/scripts/sync_git_release.sh" \\
   --display-version "\$RELEASE_DISPLAY_VERSION" \\
   --release-type-zh "\$RELEASE_TYPE_ZH" \\
   --approval-file "\$GIT_APPROVAL_FILE"
+record_evidence stage-ok
 
 echo "[$PROJECT_SLUG] 版本已同步: \$RELEASE_DISPLAY_VERSION"
+RELEASE_STAGE=complete
 echo "[$PROJECT_SLUG] 发布完成"
 EOF
 
@@ -1431,6 +1425,19 @@ const repoRoot = path.resolve(scriptDir, '../../..');
 const defaultApprovalFile = path.join(repoRoot, 'deploy', 'aliyun', '.git-release-approval.local.json');
 const allowedTypes = 'feat|fix|refactor|perf|docs|test|build|ci|chore';
 const fieldLabels = ['问题/需求', '实现结果', '影响范围', '验证方式', '关联任务', '风险与回滚'];
+const targetKeys = ['target-env', 'target-host', 'target-user', 'target-port', 'target-root', 'release-entry', 'target-auth', 'key-ref', 'host-fingerprint'];
+
+function targetFromArgs(args) {
+  if (targetKeys.some((key) => args[key]) && !targetKeys.every((key) => args[key])) fail('发布目标参数不完整，必须同时提供环境、主机、账号、端口、根目录、入口、认证方式、密钥引用和主机指纹。');
+  if (!targetKeys.every((key) => args[key])) return null;
+  const [env, host, user, port, root, entry, auth, keyRef, hostFingerprint] = targetKeys.map((key) => args[key]);
+  if (!/^[a-z][a-z0-9-]*$/.test(env) || !/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(host) ||
+      !/^[a-z_][a-z0-9_-]*$/.test(user) || !/^[0-9]+$/.test(port) || Number(port) < 1 || Number(port) > 65535 ||
+      !/^\/[A-Za-z0-9_./-]+$/.test(root) || !/^\/[A-Za-z0-9_./-]+$/.test(entry) ||
+      !['key', 'agent', 'password'].includes(auth) || !(keyRef === 'legacy-password' || keyRef.startsWith('/')) ||
+      !/^SHA256:[A-Za-z0-9+/]{43}$/.test(hostFingerprint)) fail('发布目标包含非法环境、主机、账号、端口、认证引用、指纹或路径。');
+  return { env, host, user, port, root, entry, auth, keyRef, hostFingerprint };
+}
 
 function fail(message) {
   console.error(message);
@@ -1581,10 +1588,11 @@ function readApproval(filePath, gitTag) {
     fail(`缺少 Git 发布审批信息: ${filePath}。请先通过 Codex Skill 梳理提交内容并自动生成审批文件。`);
   }
   const approval = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  if (approval.schemaVersion !== 2 || approval.confirmed !== true) fail('Git 发布审批文件无效，请重新生成并写入数据库改动范围。');
+  if (![2, 3].includes(approval.schemaVersion) || approval.confirmed !== true) fail('Git 发布审批文件无效，请重新生成并写入数据库改动范围。');
   if (approval.gitTag !== gitTag) fail('Git 发布审批对应的 tag 与当前 release plan 不一致，请重新梳理并生成。');
   validateMessage(approval.message);
   if (!['web', 'backend', 'data'].includes(approval.dbChangeScope)) fail('Git 发布审批缺少合法的数据库改动范围。');
+  if (approval.schemaVersion === 3 && (!approval.target || Object.keys(approval.target).length !== 9)) fail('发布目标审批不完整。');
   if (!Array.isArray(approval.approvedPaths)) fail('Git 发布确认文件缺少提交路径。');
   return approval;
 }
@@ -1633,11 +1641,13 @@ if (command === 'approve') {
   }
 
   const fingerprint = workspaceFingerprint();
+  const target = targetFromArgs(args);
   writePrivate(approvalFile, `${JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: target ? 3 : 2,
     confirmed: true,
     gitTag: args['git-tag'],
     dbChangeScope: args['db-change-scope'],
+    ...(target ? { target } : {}),
     message,
     approvedPaths,
     workspaceFingerprint: fingerprint.hash,
@@ -1652,6 +1662,10 @@ if (command === 'verify') {
   if (!args['git-tag']) fail('verify 缺少 --git-tag。');
   ensureGitRepo();
   const approval = readApproval(approvalFile, args['git-tag']);
+  if (targetKeys.some((key) => args[key])) {
+    const target = targetFromArgs(args);
+    if (!target || JSON.stringify(target) !== JSON.stringify(approval.target)) fail('本次授权的环境、账号、主机、目录或入口与发布目标不一致。');
+  }
   const fingerprint = workspaceFingerprint();
   if (fingerprint.hash !== approval.workspaceFingerprint || JSON.stringify(fingerprint.paths) !== JSON.stringify(approval.workspacePaths)) {
     fail('梳理后工作区或文件清单已变化，请重新梳理并生成 Git 提交信息。');
@@ -1855,7 +1869,9 @@ cp "$TEMPLATE_DIR/sqlite_backup.sh" "$SQLITE_BACKUP_SCRIPT"
 cp "$TEMPLATE_DIR/pull_sqlite_backup.sh" "$SQLITE_PULL_SCRIPT"
 cp "$TEMPLATE_DIR/install_sqlite_backup_schedule.sh" "$SQLITE_SCHEDULE_SCRIPT"
 cp "$TEMPLATE_DIR/remote_release.sh" "$REMOTE_RELEASE_SCRIPT"
-chmod +x "$PACKAGE_SCRIPT" "$DEPLOY_SCRIPT" "$START_SCRIPT" "$BOOTSTRAP_SCRIPT" "$VERSION_SCRIPT" "$GIT_COMMIT_SCRIPT" "$GIT_SYNC_SCRIPT" "$CONFIG_INIT_SCRIPT" "$NGINX_CONFIG_SCRIPT" "$SQLITE_BACKUP_SCRIPT" "$SQLITE_PULL_SCRIPT" "$SQLITE_SCHEDULE_SCRIPT" "$REMOTE_RELEASE_SCRIPT"
+cp "$TEMPLATE_DIR/ssh_transport.sh" "$SSH_TRANSPORT_SCRIPT"
+cp "$TEMPLATE_DIR/deploy_static_files.sh" "$STATIC_DEPLOY_SCRIPT"
+chmod +x "$PACKAGE_SCRIPT" "$DEPLOY_SCRIPT" "$START_SCRIPT" "$BOOTSTRAP_SCRIPT" "$VERSION_SCRIPT" "$GIT_COMMIT_SCRIPT" "$GIT_SYNC_SCRIPT" "$CONFIG_INIT_SCRIPT" "$NGINX_CONFIG_SCRIPT" "$SQLITE_BACKUP_SCRIPT" "$SQLITE_PULL_SCRIPT" "$SQLITE_SCHEDULE_SCRIPT" "$REMOTE_RELEASE_SCRIPT" "$SSH_TRANSPORT_SCRIPT" "$STATIC_DEPLOY_SCRIPT"
 
 "$CONFIG_INIT_SCRIPT" --non-interactive
 if [[ -n "$SQLITE_DB_PATH" ]]; then
@@ -1883,3 +1899,5 @@ echo "  $SQLITE_BACKUP_SCRIPT"
 echo "  $SQLITE_PULL_SCRIPT"
 echo "  $SQLITE_SCHEDULE_SCRIPT"
 echo "  $REMOTE_RELEASE_SCRIPT"
+echo "  $SSH_TRANSPORT_SCRIPT"
+echo "  $STATIC_DEPLOY_SCRIPT"
