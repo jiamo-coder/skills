@@ -22,6 +22,7 @@ description: 为当前项目生成阿里云 ECS 发布脚本、按环境固定�
 - 生成或更新 `deploy/aliyun/scripts/configure_nginx_site.sh`
 - 生成或更新 `sqlite_backup.sh`、`pull_sqlite_backup.sh`、`install_sqlite_backup_schedule.sh` 和 `remote_release.sh`
 - 生成或更新 `ssh_transport.sh` 和 `deploy_static_files.sh`；新发布默认密钥登录并固定主机身份
+- 生成 `install_release_access.sh`，供管理员一次性安装项目专属的免密码 sudo 授权；日常发布绝不索取 root/sudo 口令
 - 首次调用时自动创建本机私有的 `deploy/aliyun/.deploy.local.sh`
 
 这个 skill 不应该跳过 repo 探查。脚本是否可用，完全取决于是否先读清楚当前项目。
@@ -92,6 +93,7 @@ find . -maxdepth 3 -type f -name 'package.json'
 - `deploy/aliyun/scripts/remote_release.sh`
 - `deploy/aliyun/scripts/ssh_transport.sh`
 - `deploy/aliyun/scripts/deploy_static_files.sh`
+- `deploy/aliyun/scripts/install_release_access.sh`（只用于一次性管理员配置，发布脚本不上传/执行）
 - `deploy/aliyun/.deploy.local.sh`（首次生成，权限 `600`，禁止提交）
 - `deploy/aliyun/.git-release-approval.local.json`（每次发布前由 Agent 梳理后自动生成，权限 `600`，禁止提交）
 
@@ -140,6 +142,15 @@ find . -maxdepth 3 -type f -name 'package.json'
 - 生成器必须接收或从 env 模板提取 `--app-port`，并可接收 `--deploy-host`、`--deploy-user`、`--deploy-port`、`--ssh-auth-method`、`--ssh-key-file`；无服务器连接值时也要落下完整字段，发布前再补齐。
 - 生产、预览各使用独立的本机私有目标文件，由 `PO_DEPLOY_ENV_FILE` 显式选择；不要把一个环境的主机/账号/密钥引用覆盖成另一个。密钥与主机身份、管理员入口的契约见 [项目化 SSH 发布目标](references/secure-release-targets.md)，脱敏示例见 [deploy-target.example.sh](references/deploy-target.example.sh)。
 - 旧环境口令认证只有同时明确设置 `PO_SSH_AUTH_METHOD=password` 与 `PO_LEGACY_PASSWORD_AUTH=1` 才允许；新环境的密钥失败绝不回退口令。
+
+## 一次配置、日常一键发布
+
+- 每个项目/环境明确配置发布账号、SSH 密钥引用、可信主机身份、目标目录及 `PO_REMOTE_RELEASE_ENTRY`。账号可以在同一 ECS 上共存，但授权只覆盖各自的固定入口和 allowlist。
+- 管理员**一次性**审核并安装 root 持有、发布账号不可改的项目入口；先在本机运行 `bash deploy/aliyun/scripts/install_release_access.sh --account <发布账号> --entry <固定入口> --render` 查看最小 sudoers 规则。管理员确认入口代码和项目 allowlist 后，在服务器可信位置安装该工具，再以 root 运行相同参数加 `--install`。管理员不应从同事可写的上传目录直接以 root 执行脚本。
+- 工具只为已经存在的固定入口安装 `NOPASSWD` 规则，安装前检查入口及父目录的所有权、写权限和软链接，并用 `visudo` 验证。不会创建入口、改写已有不同授权，也不会授予 `sudo bash`、`sudo systemctl`、任意脚本或任意命令权限。
+- 正式发布前 `po_check_login` 和 `po_check_release_entry` 以非交互方式检查密钥、主机、入口和当前范围；缺配置、入口不安全、免密码规则缺失或 allowlist 拒绝时在上传前停止，并指出管理员需要补哪一项。
+- 一次性配置验收通过后，用户明确要求发布时 Agent 可自动完成打包、审批元数据、上传、健康检查、回退和版本/Git 同步，不再安排每次人工输入管理员密码；不得把“没有密码提示”解释为跳过数据库、生产授权或回退门禁。`--render` 仅是预览，不代表已经完成服务器授权。
+- 旧脚本若每次生成执行脚本并 `sudo bash`，先迁移为调用固定入口；若本机直接拼接 `ssh sudo` 命令，改为统一使用 `ssh_transport.sh`。保留项目原有的发布/回退语义，不能只替换认证方式。迁移步骤见 [项目化 SSH 发布目标](references/secure-release-targets.md)。
 
 ## Generation Rules
 

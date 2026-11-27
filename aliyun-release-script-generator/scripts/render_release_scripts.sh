@@ -146,8 +146,9 @@ SQLITE_SCHEDULE_SCRIPT="$OUTPUT_DIR/install_sqlite_backup_schedule.sh"
 REMOTE_RELEASE_SCRIPT="$OUTPUT_DIR/remote_release.sh"
 SSH_TRANSPORT_SCRIPT="$OUTPUT_DIR/ssh_transport.sh"
 STATIC_DEPLOY_SCRIPT="$OUTPUT_DIR/deploy_static_files.sh"
+ACCESS_INSTALL_SCRIPT="$OUTPUT_DIR/install_release_access.sh"
 TEMPLATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../templates" && pwd)"
-for template in sqlite_backup.sh pull_sqlite_backup.sh install_sqlite_backup_schedule.sh remote_release.sh ssh_transport.sh deploy_static_files.sh; do
+for template in sqlite_backup.sh pull_sqlite_backup.sh install_sqlite_backup_schedule.sh remote_release.sh ssh_transport.sh deploy_static_files.sh install_release_access.sh; do
   if [[ ! -f "$TEMPLATE_DIR/$template" ]]; then
     echo "缺少发布模板: $TEMPLATE_DIR/$template" >&2
     exit 1
@@ -1871,7 +1872,8 @@ cp "$TEMPLATE_DIR/install_sqlite_backup_schedule.sh" "$SQLITE_SCHEDULE_SCRIPT"
 cp "$TEMPLATE_DIR/remote_release.sh" "$REMOTE_RELEASE_SCRIPT"
 cp "$TEMPLATE_DIR/ssh_transport.sh" "$SSH_TRANSPORT_SCRIPT"
 cp "$TEMPLATE_DIR/deploy_static_files.sh" "$STATIC_DEPLOY_SCRIPT"
-chmod +x "$PACKAGE_SCRIPT" "$DEPLOY_SCRIPT" "$START_SCRIPT" "$BOOTSTRAP_SCRIPT" "$VERSION_SCRIPT" "$GIT_COMMIT_SCRIPT" "$GIT_SYNC_SCRIPT" "$CONFIG_INIT_SCRIPT" "$NGINX_CONFIG_SCRIPT" "$SQLITE_BACKUP_SCRIPT" "$SQLITE_PULL_SCRIPT" "$SQLITE_SCHEDULE_SCRIPT" "$REMOTE_RELEASE_SCRIPT" "$SSH_TRANSPORT_SCRIPT" "$STATIC_DEPLOY_SCRIPT"
+cp "$TEMPLATE_DIR/install_release_access.sh" "$ACCESS_INSTALL_SCRIPT"
+chmod +x "$PACKAGE_SCRIPT" "$DEPLOY_SCRIPT" "$START_SCRIPT" "$BOOTSTRAP_SCRIPT" "$VERSION_SCRIPT" "$GIT_COMMIT_SCRIPT" "$GIT_SYNC_SCRIPT" "$CONFIG_INIT_SCRIPT" "$NGINX_CONFIG_SCRIPT" "$SQLITE_BACKUP_SCRIPT" "$SQLITE_PULL_SCRIPT" "$SQLITE_SCHEDULE_SCRIPT" "$REMOTE_RELEASE_SCRIPT" "$SSH_TRANSPORT_SCRIPT" "$STATIC_DEPLOY_SCRIPT" "$ACCESS_INSTALL_SCRIPT"
 
 "$CONFIG_INIT_SCRIPT" --non-interactive
 if [[ -n "$SQLITE_DB_PATH" ]]; then
@@ -1901,3 +1903,4 @@ echo "  $SQLITE_SCHEDULE_SCRIPT"
 echo "  $REMOTE_RELEASE_SCRIPT"
 echo "  $SSH_TRANSPORT_SCRIPT"
 echo "  $STATIC_DEPLOY_SCRIPT"
+echo "  $ACCESS_INSTALL_SCRIPT"

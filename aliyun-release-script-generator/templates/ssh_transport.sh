@@ -67,10 +67,18 @@ po_check_login() {
 po_check_release_entry() {
   local project="$1" scope="$2" root="$3" service="$4" entry="${PO_REMOTE_RELEASE_ENTRY:-}"
   [[ "$project" =~ ^[a-z0-9-]+$ && "$scope" =~ ^(web|backend|data|static)$ && "$root" =~ ^/[A-Za-z0-9_./-]+$ && "$service" =~ ^[A-Za-z0-9_.@-]+$ ]] || { po_transport_fail '发布范围或目标路径无效'; return 1; }
-  [[ "$entry" =~ ^/[A-Za-z0-9_./-]+$ ]] || { po_transport_fail '未配置管理员维护的绝对路径发布入口 PO_REMOTE_RELEASE_ENTRY'; return 1; }
-  local command suffix
-  printf -v command 'entry=%q; test -x "$entry" || exit 11; p="$entry"; while [ "$p" != / ]; do test ! -w "$p" && test "$(stat -c %%U "$p")" = root && test "$(( 0$(stat -c %%a "$p") & 022 ))" -eq 0 || exit 12; p="${p%%/*}"; [ -n "$p" ] || p=/; done; ' "$entry"
-  printf -v suffix 'sudo -n -l -- %q >/dev/null && sudo -n -- %q preflight %q %q %q %q' "$entry" "$entry" "$project" "$scope" "$root" "$service"
+  [[ "$entry" =~ ^/([A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+$ ]] || { po_transport_fail '未配置安全的绝对路径发布入口 PO_REMOTE_RELEASE_ENTRY'; return 1; }
+  local command suffix status
+  printf -v command 'entry=%q; test -f "$entry" && test -x "$entry" || exit 31; p="$entry"; while [ "$p" != / ]; do test ! -L "$p" && test ! -w "$p" && test "$(stat -c %%u "$p")" -eq 0 && test "$(( 0$(stat -c %%a "$p") & 022 ))" -eq 0 || exit 32; p="$(dirname "$p")"; done; ' "$entry"
+  printf -v suffix 'sudo -n -l -- %q >/dev/null 2>&1 || exit 33; sudo -n -- %q preflight %q %q %q %q >/dev/null || exit 34' "$entry" "$entry" "$project" "$scope" "$root" "$service"
   command+="$suffix"
-  po_ssh "$command" || { po_transport_fail '发布入口、目标目录或服务权限不足；请管理员安装 root 持有且不可由发布账号修改的固定入口，并授予仅该入口的 sudo 权限'; return 1; }
+  if po_ssh "$command"; then return 0; else status=$?; fi
+  case "$status" in
+    31) po_transport_fail "固定发布入口不存在或不可执行: $entry" ;;
+    32) po_transport_fail "固定发布入口或父目录不是安全的 root 管理路径: $entry" ;;
+    33) po_transport_fail "发布账号 $PO_DEPLOY_USER 缺少该固定入口的免密码 sudo 授权；请管理员一次性安装项目专用规则" ;;
+    34) po_transport_fail "固定入口拒绝 $project/$scope 对 $root 与 $service 的发布权限；请管理员核对项目 allowlist" ;;
+    *) po_transport_fail '发布权限预检失败，请检查 SSH 连接和服务器侧入口日志' ;;
+  esac
+  return 1
 }

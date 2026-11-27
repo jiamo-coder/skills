@@ -8,6 +8,10 @@
 
 普通发布账号不得改写 `PO_REMOTE_RELEASE_ENTRY`、其父目录、sudoers、systemd 单元或运行时环境文件。管理员在服务器上安装 root 持有、组/其他不可写的固定入口，并以最小 sudoers 规则只授权该入口。入口必须自己把项目、账号、环境、根目录、服务和发布范围与管理员持有的 allowlist 比较，不相信上传包内的脚本、命令或任意路径参数；拒绝越权。`preflight <project> <scope> <root> <service>` 必须只读验证目标目录、文件替换与服务操作权限。未通过时在上传前拒绝。
 
+`install_release_access.sh` 只处理最后的 sudoers 授权：管理员先审核入口实现、所属项目和 allowlist，再运行 `--render` 看规则；安装到服务器的可信 root 管理目录后，以 root 运行 `--install`。它会拒绝缺失或可被发布账号改写的入口及父目录，拒绝覆盖已有不同规则；重跑相同授权是幂等的。规则只有 `<release_user> ALL=(root) NOPASSWD: <fixed_entry>`，但 sudoers 不负责校验参数，**入口自身必须严格拒绝非 allowlist 参数**。完成后，用发布账号运行固定入口的 `preflight`，确认 `sudo -n` 无密码提示，再尝试隔离环境发布/健康检查/回退。不要为了省去密码而授权 `bash`、`sh`、`env` 或临时上传路径。
+
+旧脚本迁移顺序：识别全部正式发布、预览、静态文件、备份拉取和回退入口；保持现有范围门禁；把每次生成并提权运行的脚本改为非特权制品或由固定入口内的已审核逻辑处理；统一改用按环境固定的密钥和主机指纹；完成一次性管理员入口及 sudoers 安装；最后在隔离环境验证上传、切换、健康失败回退。未完成固定入口和 allowlist 时只能预览授权规则，不可声称已经实现生产一键发布。
+
 应用入口调用形态为 `deploy <project> <web|backend|data> <root> <service> <artifact> <sha256> <env-file> <service-file> <tag> <domain>`。入口验证 SHA-256、允许的目标和输入后，按原项目的备份/迁移/健康/回退策略操作；成功时只输出 `PO_RELEASE_OK:<tag>:<sha256>:healthy:rollback-not-needed`。失败时必须回退并给出可核对状态；不允许执行上传的 `.sh` 文件，也不允许给发布账号泛化的 `sudo bash`/`sudo env`。数据库迁移的回退仍以项目的兼容方案为准，不能自动用旧库覆盖在线数据。
 
 文件入口调用形态为 `deploy-static <project> <target-dir> <stage-dir> <apk-name> <apk-sha256> <manifest-name> <manifest-sha256> <release-id>`，须只允许核准的两个上传文件及目录：先校验两份哈希，保留旧 APK 与旧清单，原子替换 APK，最后原子替换清单，验证下载入口。若业务另需带版本号的 APK 副本，只能由管理员入口按经校验的清单元数据推导固定文件名并复制，不能接受客户端任意第三个路径。成功输出 `PO_STATIC_OK:<release-id>:<apk-sha256>:<manifest-sha256>:healthy`。`rollback-static <project> <target-dir> <release-id>` 必须恢复旧下载入口，验证后输出 `PO_STATIC_ROLLBACK_OK:<release-id>`。客户端上传的文件和脚本一律不能作为 root 可执行内容。

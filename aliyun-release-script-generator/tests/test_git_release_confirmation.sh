@@ -52,6 +52,7 @@ printf 'baseline\n' > "$PROJECT/app.txt"
 APPROVAL_TOOL="$OUTPUT_DIR/manage_git_release_commit.mjs"
 SYNC_TOOL="$OUTPUT_DIR/sync_git_release.sh"
 DEPLOY_TOOL="$OUTPUT_DIR/deploy_release.sh"
+ACCESS_TOOL="$OUTPUT_DIR/install_release_access.sh"
 APPROVAL_FILE="$PROJECT/deploy/aliyun/.git-release-approval.local.json"
 MESSAGE_FILE="$TEST_ROOT/message.txt"
 PATHS_FILE="$TEST_ROOT/paths.txt"
@@ -59,7 +60,8 @@ TAG="v1.0.1-build.1"
 
 grep -Fqx '/deploy/aliyun/.git-release-approval.local.json' "$PROJECT/.gitignore"
 node --check "$APPROVAL_TOOL"
-bash -n "$SYNC_TOOL" "$DEPLOY_TOOL"
+[[ -f "$ACCESS_TOOL" && -x "$ACCESS_TOOL" ]]
+bash -n "$SYNC_TOOL" "$DEPLOY_TOOL" "$ACCESS_TOOL"
 if rg -i 'openai|deepseek|anthropic|https?://|fetch\(' "$APPROVAL_TOOL" >/dev/null; then
   echo "审批工具不应包含模型 API 或网络调用" >&2
   exit 1

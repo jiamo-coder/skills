@@ -60,6 +60,12 @@ if po_check_release_entry myapp static /service/myapp/downloads static-files >/d
 [[ ! -e "$TEST_SCP_CALLS" ]]
 ALLOW_PERMISSION=1; export ALLOW_PERMISSION
 po_check_release_entry myapp static /service/myapp/downloads static-files
+grep -Fq 'p="$(dirname "$p")"' "$TEST_CALLS"
+grep -Fq 'exit 33' "$TEST_CALLS"
+rule="$(bash "$SKILL_DIR/templates/install_release_access.sh" --account release_user --entry /usr/local/sbin/myapp-release --render)"
+[[ "$rule" == 'release_user ALL=(root) NOPASSWD: /usr/local/sbin/myapp-release' ]]
+if bash "$SKILL_DIR/templates/install_release_access.sh" --account root --entry /usr/local/sbin/myapp-release --render >/dev/null 2>&1; then exit 1; fi
+if bash "$SKILL_DIR/templates/install_release_access.sh" --account release_user --entry /tmp/../myapp-release --render >/dev/null 2>&1; then exit 1; fi
 PO_SSH_HOST_FINGERPRINT=SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 if po_transport_init >/dev/null 2>&1; then exit 1; fi
 source "$config"
